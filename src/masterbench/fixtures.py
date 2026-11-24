@@ -1,0 +1,305 @@
+"""Deterministic synthetic test audio with known ground truth.
+
+Everything here is generated from seeds, so tests can assert against exact answers
+(key, tempo, note pitches, planted problems) and no real music ever enters the repo.
+Depends on numpy/scipy/soundfile only.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from scipy import signal
+
+SR = 44100
+NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+
+def db_to_lin(db: float) -> float:
+    return float(10.0 ** (db / 20.0))
+
+
+def midi_to_hz(midi: float, cents: float = 0.0) -> float:
+    return float(440.0 * 2.0 ** ((midi - 69 + cents / 100.0) / 12.0))
+
+
+def midi_name(midi: int) -> str:
+    return f"{NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+
+
+@dataclass(frozen=True)
+class Note:
+    start_s: float
+    duration_s: float
+    midi: int
+    cents: float = 0.0
+
+    @property
+    def freq_hz(self) -> float:
+        return midi_to_hz(self.midi, self.cents)
+
+    @property
+    def name(self) -> str:
+        return midi_name(self.midi)
+
+
+@dataclass(frozen=True)
+class LoopTruth:
+    key: str
+    tempo_bpm: float
+    bars: int
+    notes_808: list[Note]
+    kick_times_s: list[float]
+    snare_times_s: list[float]
+
+
+@dataclass(frozen=True)
+class VocalTruth:
+    key: str
+    vibrato_hz: float
+    vibrato_cents: float
+    notes: list[Note]
+    off_cents: float = field(default=30.0)
+
+
+def _normalize_peak(x: np.ndarray, peak_dbfs: float) -> np.ndarray:
+    return x * (db_to_lin(peak_dbfs) / np.max(np.abs(x)))
+
+
+def _stereo(mid: np.ndarray, side: np.ndarray | None = None) -> np.ndarray:
+    side = np.zeros_like(mid) if side is None else side
+    return np.column_stack([mid + side, mid - side])
+
+
+def _pink(n: int, rng: np.random.Generator) -> np.ndarray:
+    spectrum = np.fft.rfft(rng.standard_normal(n))
+    freqs = np.fft.rfftfreq(n)
+    freqs[0] = freqs[1]
+    return np.fft.irfft(spectrum / np.sqrt(freqs), n)
+
+
+def pink_noise(
+    duration_s: float = 10.0, sr: int = SR, rms_dbfs: float = -20.0, seed: int = 0
+) -> np.ndarray:
+    """Stereo pink noise (-3 dB/octave) at a set RMS, with a correlated mid and a quiet side."""
+    rng = np.random.default_rng(seed)
+    n = int(duration_s * sr)
+    audio = _stereo(_pink(n, rng), 0.3 * _pink(n, rng))
+    return audio * (db_to_lin(rms_dbfs) / np.sqrt(np.mean(audio**2)))
+
+
+def sine_sweep(
+    duration_s: float = 10.0,
+    sr: int = SR,
+    f_start: float = 20.0,
+    f_end: float = 20000.0,
+    peak_dbfs: float = -6.0,
+) -> np.ndarray:
+    """Stereo logarithmic sine sweep with short fades."""
+    t = np.arange(int(duration_s * sr)) / sr
+    sweep = signal.chirp(t, f_start, duration_s, f_end, method="logarithmic", phi=-90)
+    fade = int(0.01 * sr)
+    sweep[:fade] *= np.linspace(0.0, 1.0, fade)
+    sweep[-fade:] *= np.linspace(1.0, 0.0, fade)
+    return _stereo(sweep * db_to_lin(peak_dbfs))
+
+
+def _butter(x: np.ndarray, order: int, freq: float | list[float], kind: str, sr: int) -> np.ndarray:
+    sos = signal.butter(order, freq, kind, fs=sr, output="sos")
+    return np.asarray(signal.sosfilt(sos, x))
+
+
+def _place(dest: np.ndarray, start_s: float, sound: np.ndarray, sr: int) -> None:
+    start = int(round(start_s * sr))
+    end = min(start + len(sound), len(dest))
+    if start < len(dest):
+        dest[start:end] += sound[: end - start]
+
+
+def _kick(sr: int) -> np.ndarray:
+    t = np.arange(int(0.25 * sr)) / sr
+    freq = 48.0 + 110.0 * np.exp(-t / 0.018)
+    body = np.sin(2 * np.pi * np.cumsum(freq) / sr) * np.exp(-t / 0.07)
+    click = np.exp(-t / 0.002) * 0.4
+    return body + click
+
+
+def _snare(sr: int, rng: np.random.Generator) -> np.ndarray:
+    t = np.arange(int(0.2 * sr)) / sr
+    noise = _butter(rng.standard_normal(len(t)), 2, [1200, 8000], "bandpass", sr)
+    noise *= np.exp(-t / 0.05)
+    tone = np.sin(2 * np.pi * 190.0 * t) * np.exp(-t / 0.03)
+    return 0.8 * noise + 0.5 * tone
+
+
+def _hat(sr: int, rng: np.random.Generator) -> np.ndarray:
+    t = np.arange(int(0.05 * sr)) / sr
+    return _butter(rng.standard_normal(len(t)), 4, 7000, "highpass", sr) * np.exp(-t / 0.012)
+
+
+def _bass_808(note: Note, sr: int) -> np.ndarray:
+    """Sustained sine with a short downward glide into pitch and a little harmonic content."""
+    t = np.arange(int(note.duration_s * sr)) / sr
+    freq = note.freq_hz * (1.0 + 0.5 * np.exp(-t / 0.008))
+    phase = 2 * np.pi * np.cumsum(freq) / sr
+    env = np.minimum(t / 0.004, 1.0) * np.exp(-t / (note.duration_s * 0.9))
+    release = int(0.02 * sr)
+    env[-release:] *= np.linspace(1.0, 0.0, release)
+    return np.tanh(1.6 * np.sin(phase)) * env
+
+
+def _pad(midis: tuple[int, ...], duration_s: float, sr: int, detune_cents: float) -> np.ndarray:
+    t = np.arange(int(duration_s * sr)) / sr
+    out = np.zeros_like(t)
+    for midi in midis:
+        f = midi_to_hz(midi, detune_cents)
+        for harmonic, level in ((1, 1.0), (2, 0.35), (3, 0.15)):
+            out += level * np.sin(2 * np.pi * f * harmonic * t)
+    attack = int(0.05 * sr)
+    out[:attack] *= np.linspace(0.0, 1.0, attack)
+    out[-attack:] *= np.linspace(1.0, 0.0, attack)
+    return out / len(midis)
+
+
+# F natural minor. i - iv - v - i, two bars per chord.
+_LOOP_KEY = "F minor"
+_LOOP_CHORDS = ((53, 56, 60), (58, 61, 65), (60, 63, 67), (53, 56, 60))
+# One 808 note per bar (F1, F1, G#1, F1, A#1, C2, D#2, F1); bar 6 is planted out of tune.
+_LOOP_808_MIDI = (29, 29, 32, 29, 34, 36, 39, 29)
+DETUNED_BAR = 5
+DETUNED_CENTS = 35.0
+
+
+def drum_808_loop(
+    sr: int = SR,
+    tempo_bpm: float = 140.0,
+    seed: int = 1,
+    peak_dbfs: float = -6.0,
+    hat_gain: float = 0.12,
+    bass_gain: float = 0.8,
+    detune: bool = True,
+) -> tuple[np.ndarray, LoopTruth]:
+    """8-bar hip-hop style loop in F minor: kick, snare, hats, 808, pad."""
+    rng = np.random.default_rng(seed)
+    bars = len(_LOOP_808_MIDI)
+    beat = 60.0 / tempo_bpm
+    n = int(round(bars * 4 * beat * sr))
+    drums, bass, pad_l, pad_r = (np.zeros(n) for _ in range(4))
+    hats_l, hats_r = np.zeros(n), np.zeros(n)
+
+    kick, kick_times, snare_times, notes = _kick(sr), [], [], []
+    for bar in range(bars):
+        bar_start = bar * 4 * beat
+        for kick_beat in (0.0, 2.5):
+            kick_times.append(bar_start + kick_beat * beat)
+            _place(drums, kick_times[-1], kick, sr)
+        for snare_beat in (1.0, 3.0):
+            snare_times.append(bar_start + snare_beat * beat)
+            _place(drums, snare_times[-1], 0.6 * _snare(sr, rng), sr)
+        for eighth in range(8):
+            hat = hat_gain * (1.0 if eighth % 2 == 0 else 0.6) * _hat(sr, rng)
+            pan = 0.35 if eighth % 2 == 0 else -0.35
+            _place(hats_l, bar_start + eighth * beat / 2, hat * (1 - pan), sr)
+            _place(hats_r, bar_start + eighth * beat / 2, hat * (1 + pan), sr)
+
+        cents = DETUNED_CENTS if detune and bar == DETUNED_BAR else 0.0
+        note = Note(bar_start, 3.5 * beat, _LOOP_808_MIDI[bar], cents)
+        notes.append(note)
+        _place(bass, note.start_s, bass_gain * _bass_808(note, sr), sr)
+
+    for index, chord in enumerate(_LOOP_CHORDS):
+        start = index * 8 * beat
+        _place(pad_l, start, 0.22 * _pad(chord, 8 * beat, sr, -4.0), sr)
+        _place(pad_r, start, 0.22 * _pad(chord, 8 * beat, sr, 4.0), sr)
+
+    centre = drums + bass
+    audio = np.column_stack([centre + pad_l + hats_l, centre + pad_r + hats_r])
+    truth = LoopTruth(_LOOP_KEY, tempo_bpm, bars, notes, kick_times, snare_times)
+    return _normalize_peak(audio, peak_dbfs), truth
+
+
+def reference_master(sr: int = SR) -> np.ndarray:
+    """A louder, brighter, bass-heavier take on the loop, standing in for a commercial master."""
+    audio, _ = drum_808_loop(sr=sr, seed=7, hat_gain=0.25, bass_gain=1.1, detune=False)
+    driven = np.tanh(audio * db_to_lin(14.0))
+    return _normalize_peak(driven, -1.0)
+
+
+def clipped_mix(sr: int = SR) -> np.ndarray:
+    """The loop pushed 12 dB into hard clipping: runs of consecutive full-scale samples."""
+    audio, _ = drum_808_loop(sr=sr, peak_dbfs=0.0)
+    return np.clip(audio * db_to_lin(12.0), -1.0, 1.0)
+
+
+# A melody in F minor (F3 G#3 C4 A#3 G#3 G3 F3 C4); every third note is sung sharp.
+_VOCAL_MIDI = (53, 56, 60, 58, 56, 55, 53, 60)
+_VOCAL_OFF = (2, 5)
+_VOCAL_FORMANTS = ((700.0, 130.0, 1.0), (1220.0, 170.0, 0.5), (2600.0, 250.0, 0.25))
+
+
+def synthetic_vocal(
+    sr: int = SR,
+    note_s: float = 0.8,
+    gap_s: float = 0.15,
+    off_cents: float = 30.0,
+    vibrato_hz: float = 5.5,
+    vibrato_cents: float = 20.0,
+    peak_dbfs: float = -6.0,
+) -> tuple[np.ndarray, VocalTruth]:
+    """Mono band-limited sawtooth through fixed "ah" formants, with delayed vibrato."""
+    notes = [
+        Note(0.25 + i * (note_s + gap_s), note_s, midi, off_cents if i in _VOCAL_OFF else 0.0)
+        for i, midi in enumerate(_VOCAL_MIDI)
+    ]
+    n = int((notes[-1].start_s + note_s + 0.25) * sr)
+    out = np.zeros(n)
+    t = np.arange(int(note_s * sr)) / sr
+    vibrato_depth = vibrato_cents * np.clip((t - 0.15) / 0.2, 0.0, 1.0)
+    vibrato = vibrato_depth * np.sin(2 * np.pi * vibrato_hz * t)
+    edge = int(0.03 * sr)
+    env = np.ones_like(t)
+    env[:edge] = np.linspace(0.0, 1.0, edge)
+    env[-edge:] = np.linspace(1.0, 0.0, edge)
+
+    for note in notes:
+        freq = note.freq_hz * 2.0 ** (vibrato / 1200.0)
+        phase = 2 * np.pi * np.cumsum(freq) / sr
+        harmonics = int((sr / 2) // freq.max())
+        saw = sum(np.sin(k * phase) / k for k in range(1, harmonics + 1))
+        _place(out, note.start_s, saw * env, sr)
+
+    shaped = 0.05 * out
+    for centre, bandwidth, level in _VOCAL_FORMANTS:
+        band = [centre - bandwidth / 2, centre + bandwidth / 2]
+        shaped += level * _butter(out, 1, band, "bandpass", sr)
+    truth = VocalTruth(_LOOP_KEY, vibrato_hz, vibrato_cents, notes, off_cents)
+    return _normalize_peak(shaped, peak_dbfs), truth
+
+
+def write_wav(path: Path, audio: np.ndarray, sr: int = SR, subtype: str = "PCM_24") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(path, audio, sr, subtype=subtype)
+    return path
+
+
+def write_all(out_dir: Path, sr: int = SR) -> dict[str, Path]:
+    """Write every fixture plus truth.json. Returns name -> path."""
+    loop, loop_truth = drum_808_loop(sr=sr)
+    vocal, vocal_truth = synthetic_vocal(sr=sr)
+    audio = {
+        "pink_noise": pink_noise(sr=sr),
+        "sine_sweep": sine_sweep(sr=sr),
+        "loop": loop,
+        "reference": reference_master(sr=sr),
+        "clipped": clipped_mix(sr=sr),
+        "vocal": vocal,
+    }
+    paths = {name: write_wav(out_dir / f"{name}.wav", data, sr) for name, data in audio.items()}
+    paths["truth"] = out_dir / "truth.json"
+    truth = {"sample_rate": sr, "loop": asdict(loop_truth), "vocal": asdict(vocal_truth)}
+    paths["truth"].write_text(json.dumps(truth, indent=2) + "\n", encoding="utf-8")
+    return paths

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Audio never goes in the repo; test fixtures are generated at test time.
+*.wav
+*.aif
+*.aiff
+*.flac
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.opus
+
+# Local data and secrets
+*.db
+.env
+.DS_Store
