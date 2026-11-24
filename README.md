@@ -6,7 +6,8 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phase 0 (scaffold and verification spike) is done. Phase 1 is next.
+**Status:** Phases 0 and 1 are done: mastering against a reference, loudness analysis,
+the reference library, the watch folder and a first web UI. Phase 2 is next.
 
 ## Setup (macOS)
 
@@ -28,6 +29,54 @@ uv run masterbench init
 
 `init` creates `~/MasterBench` and the SQLite index. Set `MASTERBENCH_HOME` to put the data
 somewhere else.
+
+## Use
+
+Add a reference track for a genre (the first one becomes that genre's default):
+
+```bash
+uv run masterbench ref add ~/Music/reference.wav --genre hip-hop
+```
+
+Master a bounce against the genre default, to -14 LUFS and -1 dBTP:
+
+```bash
+uv run masterbench master ~/Music/Bounces/song.wav --genre hip-hop
+```
+
+Open the web UI (127.0.0.1 only):
+
+```bash
+uv run masterbench ui
+```
+
+Analyze bounces as they land in `~/MasterBench/Inbox/<genre>/`:
+
+```bash
+uv run masterbench watch
+```
+
+Rebuild the index from the files on disk:
+
+```bash
+uv run masterbench reindex
+```
+
+Each master is a new folder under `~/MasterBench/projects/<track>/runs/` holding
+`master_24.wav`, `master_16.wav`, `run.json` and `analysis.json`. The input is copied into
+the project and never modified. `masterbench master --help` lists the options (`--ref`,
+`--lufs`, `--ceiling`, `--match-loudness`, `--title`).
+
+Defaults can be changed in `~/MasterBench/settings.toml`:
+
+```toml
+default_genre = "house"
+watch_auto_master = true
+
+[targets]
+lufs_i = -11.0
+true_peak_dbtp = -1.0
+```
 
 ## Checks
 
@@ -51,11 +100,19 @@ model (about 65 MB) the first time.
 
 ```
 src/masterbench/
-  cli.py          Typer entry point (`masterbench`)
-  config.py       paths, targets, thresholds, settings.toml
-  db.py           SQLite connection and migration runner
-  fixtures.py     synthetic test audio with known ground truth
-  migrations/     numbered SQL files, applied in order
+  cli.py            Typer entry point (`masterbench`)
+  config.py         paths, targets, thresholds, settings.toml
+  audio_io.py       load, save (TPDF dither), hashing
+  validate.py       pre-flight checks on a mix
+  analysis/         loudness, flags, AnalysisReport
+  master/           Matchering wrapper, true-peak limiter, pipeline
+  references/       genre reference library
+  projects.py       projects, runs, manifests
+  db.py, index.py   SQLite migrations, indexing, reindex
+  watch.py          watch folder
+  ui/app.py         Gradio app
+  fixtures.py       synthetic test audio with known ground truth
+  migrations/       numbered SQL files, applied in order
 scripts/verify_stack.py   Phase 0 verification spike
 tests/                    generated fixtures only; no audio is committed
 ```

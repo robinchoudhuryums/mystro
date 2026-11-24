@@ -47,7 +47,10 @@ class Settings:
     thresholds: Thresholds = field(default_factory=Thresholds)
     notes_model: str = "claude-sonnet-5-5"
     notes_monthly_cap_usd: float = 5.0
+    default_genre: str = "hip-hop"
     watch_auto_master: bool = False
+    watch_stable_s: float = 2.0
+    ui_port: int = 7860
     mcp_allow_writes: bool = False
     break_interval_min: int = 50
 

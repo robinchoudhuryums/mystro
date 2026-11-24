@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -18,7 +19,7 @@ def test_version() -> None:
 def test_init_creates_data_root_and_database(data_root: Path) -> None:
     first = runner.invoke(app, ["init"])
     assert first.exit_code == 0, first.output
-    assert "001_init.sql" in first.stdout
+    assert f"schema version {len(db.load_migrations())}" in first.stdout
     assert (data_root / "Inbox" / "electronic").is_dir()
 
     conn = db.connect(data_root / "masterbench.db")
@@ -26,7 +27,7 @@ def test_init_creates_data_root_and_database(data_root: Path) -> None:
     conn.close()
 
     second = runner.invoke(app, ["init"])
-    assert second.exit_code == 0 and "up to date" in second.stdout
+    assert second.exit_code == 0 and second.stdout == first.stdout
 
 
 def test_fixtures_command(tmp_path: Path) -> None:
@@ -34,3 +35,48 @@ def test_fixtures_command(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (tmp_path / "fx" / "loop.wav").is_file()
     assert (tmp_path / "fx" / "truth.json").is_file()
+
+
+def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
+    added = runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+    assert added.exit_code == 0, added.output
+    assert added.stdout.startswith("hip-hop/reference (default): -8.7 LUFS")
+    listed = runner.invoke(app, ["ref", "list"])
+    assert listed.stdout.startswith("* hip-hop/reference")
+
+    mastered = runner.invoke(app, ["master", str(fx["loop"])])
+    assert mastered.exit_code == 0, mastered.output
+    rows = {line.split()[0]: line.split() for line in mastered.stdout.splitlines() if line.strip()}
+    assert rows["Master"][1] == "-14.0" and rows["Mix"][1] == "-19.7"
+    assert "No flags." in mastered.stdout and "master_24.wav" in mastered.stdout
+    assert len(list(data_root.glob("projects/loop/runs/*/master_16.wav"))) == 1
+
+    louder = runner.invoke(app, ["master", str(fx["loop"]), "--lufs", "-11", "--ceiling", "-1.5"])
+    assert louder.exit_code == 0 and " -11.0 " in louder.stdout
+
+    analyzed = runner.invoke(app, ["analyze", str(fx["clipped"]), "--genre", "hip-hop"])
+    assert analyzed.exit_code == 0 and "Clipping" in analyzed.stdout
+
+    (data_root / "masterbench.db").unlink()
+    reindexed = runner.invoke(app, ["reindex"])
+    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references"
+
+
+def test_errors_exit_nonzero_with_a_message(data_root: Path, fx: dict[str, Path]) -> None:
+    no_reference = runner.invoke(app, ["master", str(fx["loop"]), "--genre", "house"])
+    assert no_reference.exit_code == 1
+    assert "no reference 'default' in genre 'house'" in no_reference.output
+    missing = runner.invoke(app, ["master", str(data_root / "nope.wav")])
+    assert missing.exit_code == 2
+    assert runner.invoke(app, ["ref", "default", "house", "nope"]).exit_code == 1
+    assert runner.invoke(app, ["ref", "remove", "house", "nope"]).exit_code == 1
+
+
+def test_watch_once_processes_the_inbox(data_root: Path, fx: dict[str, Path], monkeypatch) -> None:
+    runner.invoke(app, ["init"])
+    (data_root / "settings.toml").write_text("watch_stable_s = 0.2\n", encoding="utf-8")
+    shutil.copy(fx["vocal"], data_root / "Inbox" / "house" / "Hook idea.wav")
+    result = runner.invoke(app, ["watch", "--once"])
+    assert result.exit_code == 0, result.output
+    assert "Analyzed: Hook idea: Mix: -17.1 LUFS" in result.stdout
+    assert len(list(data_root.glob("projects/hook-idea/runs/*/run.json"))) == 1

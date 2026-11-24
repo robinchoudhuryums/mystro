@@ -6,7 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from masterbench import fixtures
+from masterbench import config, fixtures
+from masterbench.config import Paths, Settings
+from masterbench.references import library
 
 
 @pytest.fixture(scope="session")
@@ -25,6 +27,24 @@ def data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "MasterBench"
     monkeypatch.setenv("MASTERBENCH_HOME", str(root))
     return root
+
+
+@pytest.fixture
+def paths(data_root: Path) -> Paths:
+    paths = config.get_paths()
+    paths.ensure()
+    return paths
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings()
+
+
+@pytest.fixture
+def reference(paths: Paths, settings: Settings, fx: dict[str, Path]) -> library.Reference:
+    """The fixture reference, added to the library as the hip-hop default."""
+    return library.add(paths, fx["reference"], "hip-hop", settings)
 
 
 def peak_hz(segment: np.ndarray, sr: float, low_hz: float, high_hz: float) -> float:

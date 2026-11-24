@@ -75,7 +75,57 @@ Exact pins are in `uv.lock`.
 - Matchering imports `scipy.ndimage.filters`, which SciPy 2.0 will remove. It works on
   1.18 with a deprecation warning; hold SciPy below 2 when that release arrives.
 
-### Still to verify on the Mac
+## Phase 1: mastering MVP (2026-11-24)
+
+### What was built
+
+`masterbench master|analyze|reindex|watch|ui|ref`, the engine behind them, and a Gradio app
+with Master and Library tabs. 110 tests pass.
+
+### Decisions
+
+- **Final limiter:** our own (`master/limiter.py`), because Pedalboard's does not hold a
+  ceiling. Per-sample required gain comes from the 4x-oversampled peak across both channels
+  (linked, so the stereo image does not move), is held over a 5 ms lookahead, released at
+  40 dB/s and smoothed. A last static trim absorbs the overshoot the gain changes themselves
+  cause, which makes the ceiling a guarantee. The release is deliberately slow for a peak
+  limiter: 808 material distorts when gain recovers inside a bass cycle.
+- **Loudness targeting:** `finalize()` applies make-up gain, limits, measures, and corrects
+  until within 0.05 LU. If the target would need more than 6 dB of limiting it backs off and
+  the master comes out quieter than asked, with `off_target` and `heavy_limiting` flags.
+- **Matchering always runs with its limiter and normalization off.** One path, one limiter.
+  Its internal sample rate is set to the mix's rate, so a 48 kHz bounce stays 48 kHz.
+- **Short-term, momentary and LRA** are computed here (K-weighting from pyloudnorm's filter
+  class, sliding windows at a 100 ms hop, EBU Tech 3342 gating for LRA). Integrated loudness
+  still comes from pyloudnorm.
+- **Takes of a song share a track:** `Song v3.wav`, `Song_mix2.wav` and `Song bounce 4.wav`
+  all land in project `song`. Only suffixes introduced by v/ver/mix/bounce/master are
+  stripped, so `Track 7.wav` stays `track-7`. `--title` overrides it.
+- **Watch folder dedupes by content hash**, so restarting the watcher or re-copying a file
+  does not create another run.
+- **16-bit export** is TPDF-dithered here, seeded from the audio so identical input gives an
+  identical file.
+
+### Measurements
+
+| Check | Result |
+|---|---|
+| Loudness vs `ffmpeg ebur128`, six fixtures | integrated ±0.1 LU, short-term and momentary max ±0.15, LRA ±0.2, true peak ±0.15 dB (ffmpeg prints one decimal) |
+| Fixture loop mastered to the default target | -14.0 LUFS, -1.0 dBTP, 0.7 dB of limiting, one limiter pass |
+| Ceiling under heavy limiting (+18 dB push) | held at 4x oversampling; an 8x measurement read up to 0.09 dB higher |
+| 206 s, 48 kHz track end to end (4 CPU cores, Linux) | 20 s: validate 5, Matchering 4, limiter 7, export and analysis 4 |
+| Same input and settings twice | byte-identical 24-bit and 16-bit files |
+
+### Known gaps
+
+- The limiter's true peak is a 4x estimate. Against the default -1.0 dBTP ceiling the
+  remaining error is under 0.1 dB; raise `OVERSAMPLE` if a stricter figure is ever needed.
+- `mg.log` is process-global, so two masters in parallel threads would share Matchering's
+  log handlers. Jobs run one at a time today.
+- The UI stores an uploaded file's Gradio temp path as `original_path` in the manifest.
+  The copy under `projects/<slug>/input/` is what matters.
+
+## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
 
@@ -88,4 +138,8 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 4. **Separation speed** with the CoreML provider, and a Roformer model against `htdemucs_ft`.
    `htdemucs` weights come from a different host than the MDX models.
 5. **watchdog** on the FSEvents backend (inotify was used here).
-6. **Notifications** through `osascript`, the Quick Action, and the LaunchAgent.
+6. **Notifications** through `osascript` or `terminal-notifier` (only the latter can open
+   the run link on click), the Quick Action, and the LaunchAgent.
+7. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
+   808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while
+   `masterbench watch` runs.

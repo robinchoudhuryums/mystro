@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phase 0 done (2026-11-24). Next: Phase 1.
+**Status:** Phases 0 and 1 done (2026-11-24). Next: Phase 2.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -15,6 +15,15 @@ edited in place below and marked *[P0]*):
 - Tempo detection needs a half/double-time rule.
 - The `references` table is named `reference_tracks`; migrations live inside the package.
 - Python is pinned to 3.12 and everything fits in one uv environment.
+
+**Decisions made in Phase 1** (marked *[P1]* below):
+- The final limiter is our own lookahead true-peak limiter (`master/limiter.py`), with a
+  static trim that makes the ceiling a guarantee.
+- Every master runs Matchering with its limiter off, then gain to the loudness target, then
+  our limiter. A target needing more than 6 dB of limiting is not chased.
+- Index writes live in `index.py`; `db.py` only connects and migrates.
+- Loudness-matched playback will be done with gain nodes in the Phase 2 player, so no
+  `preview_lm.wav` is written.
 
 ---
 
@@ -88,31 +97,37 @@ scripts/verify_stack.py  ✓ Phase 0 verification spike
 src/masterbench/
   migrations/            ✓ 001_init.sql, 002_..., applied in order (packaged)
   config.py            ✓ paths, defaults, targets; loads ~/MasterBench/settings.toml
-  db.py                ✓ SQLite connection, migrations; later query helpers, reindex
+  db.py                ✓ SQLite connection and migrations
+  index.py             ✓ [P1] writes runs/analyses/references to the DB; reindex; queries
   fixtures.py          ✓ synthetic test audio with ground truth
-  cli.py               ✓ version, init, fixtures; more per phase
-  audio_io.py          # load/save, resample, format checks, mono/stereo handling
-  validate.py          # pre-flight checks on input mixes (5.1)
+  cli.py               ✓ version, init, fixtures, master, analyze, reindex, watch, ui, ref
+  audio_io.py          ✓ load (ffmpeg fallback), info, save with TPDF dither, hashing
+  validate.py          ✓ pre-flight checks on input mixes (5.1)
+  summary.py           ✓ [P1] text/Markdown run summaries for CLI, UI, notifications
+  notify.py            ✓ [P1] macOS notifications (terminal-notifier or osascript)
   analysis/
-    loudness.py        # LUFS (I/S/M), true peak, LRA, PLR/crest
+    flags.py           ✓ [P1] Flag dataclass
+    loudness.py        ✓ LUFS (I/S/M), true peak, LRA, PLR/crest
     spectrum.py        # smoothed spectrum, band energies, deltas vs reference/target curve
     stereo.py          # correlation, width, low-end mono check (<120 Hz)
     musical.py         # key, tempo, beat grid (shared by 808 tools, vocal tuning, ref matching)
     sections.py        # automatic section detection + manual markers (5.15)
     detectors.py       # sibilance, resonances, mud, harshness, vocal consistency (5.16)
     lowend.py          # 808 pitch vs key, kick/808 clash (5.17)
-    report.py          # assembles an AnalysisReport dataclass, serializes to JSON + DB
+    report.py          ✓ AnalysisReport dataclass, JSON round trip (loudness only so far)
   master/
-    matchering_engine.py  # wrapper around mg.process with our options
+    matchering_engine.py  ✓ wrapper around mg.process with our options
+    limiter.py         ✓ [P1] lookahead true-peak limiter and loudness targeting
     curve_match.py     # matching EQ toward a target curve, deterministic, linear phase (5.14)
     chain.py           # Pedalboard chains: build from preset, run, save plugin state
     presets.py         # load/save chain presets (TOML)
-    pipeline.py        # pre-chain -> Matchering or curve match -> post-chain -> export -> analyze
+    pipeline.py        ✓ validate -> Matchering -> limit -> export -> analyze -> index
+                       # still to add: pre/post chains (Phase 3), curve match (Phase 6)
   preview/
     streaming.py       # codec encode + platform normalization previews (5.11)
     speakers.py        # phone/earbuds/car/laptop/club/mono simulation (5.12)
   references/
-    library.py         # reference CRUD; caches each reference's analysis
+    library.py         ✓ reference CRUD; caches each reference's analysis
     quality.py         # detects lossy rips, brickwalled or clipped references (5.13)
     suggest.py         # suggests the best-matching reference for a mix (5.13)
     target_curve.py    # genre target curves from several references (5.14)
@@ -130,16 +145,16 @@ src/masterbench/
     versions.py        # instrumental / a cappella with locked processing (5.20)
   progress.py          # trend queries, habit detection, AI trend summary (5.18)
   monitoring.py        # calibration tone, session timer, break reminders (5.21)
-  projects.py          # project and run storage, run manifests
+  projects.py          ✓ project and run storage, run manifests
   batch.py             # EP mode and consistency report
-  watch.py             # watch folder daemon (5.19)
+  watch.py             ✓ watch folder: debounce, analyze, optional auto-master, notify
   mcp_server.py        # MCP tools over the engine (5.22)
   notes/
     mix_notes.py       # build prompt from AnalysisReport(s), call Claude, parse result
     prompt.md          # versioned prompt template
     trends_prompt.md   # versioned prompt for the progress summary
   ui/
-    app.py             # Gradio Blocks app (tabs in section 6)
+    app.py             ✓ Gradio Blocks app: Master and Library tabs so far (section 6)
     ab_player.js       # synced, gain-matched A/B/C player (Web Audio)
     pitch_editor.js    # note-level pitch view and editor
 quick_action/          # Shortcuts/Automator script + install instructions
@@ -156,16 +171,17 @@ The root is `~/MasterBench`, or `$MASTERBENCH_HOME` when set.
   settings.toml
   masterbench.db               # SQLite index (rebuildable)
   Inbox/<genre>/               # default watch folder (genre inferred from subfolder)
-  references/<genre>/<file> + .analysis.json  (cached)
+  references/<genre>/<file> + <file>.analysis.json  (cached analysis, notes)
+  references/defaults.json     # default reference per genre
   target_curves/<genre>.json
   presets/chains/<name>.toml
   projects/<track-slug>/
-    input/<original bounce>
+    track.json                 # slug, title, genre; source of truth for the tracks table
+    input/<original bounce>    # same name + different content gets a hash suffix
     stems/<model or "logic">/<stem>.wav       (cached separation or imported stems)
     runs/<timestamp>-<short-id>/
       run.json        # all settings: reference/curve, chain preset, targets, lib versions
       master_24.wav   master_16.wav
-      preview_lm.wav  # loudness-matched preview copy, used for playback only
       previews/       # codec, platform and speaker-sim renders (cached, deletable)
       analysis.json   notes.md (if generated)
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
@@ -175,7 +191,7 @@ Make every run reproducible from `run.json`. Never overwrite the input file.
 
 ### Database schema (initial; extend through migrations)
 
-Implemented in `src/masterbench/migrations/001_init.sql`.
+Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes and reference names).
 
 - `tracks` (id, slug, title, genre, created_at)
 - `runs` (id = run folder name, track_id, kind [master|analysis_only|batch|version|tune], settings_json, path, created_at, lib_versions_json)
@@ -198,7 +214,7 @@ Implemented in `src/masterbench/migrations/001_init.sql`.
 ### 5.2 Mastering pipeline
 1. Optional **pre-chain** (Pedalboard preset).
 2. **Matchering** against the chosen reference, **or** **curve match** toward a genre target curve (5.14). When a post-chain limiter is enabled, run Matchering with its limiter **off** so audio isn't limited twice. *[P0]* That output exceeds 0 dBFS, so keep it in float until the limiter.
-3. Optional **post-chain**: tone or saturation, then a final limiter with a true-peak ceiling (default −1.0 dBTP). *[P0]* Pedalboard's `Limiter` does not hold a ceiling: after it, measure the 4×-oversampled peak and trim, or build a lookahead true-peak limiter. Decide in Phase 1 and verify the ceiling in tests.
+3. Optional **post-chain**: tone or saturation, then a final limiter with a true-peak ceiling (default −1.0 dBTP). *[P1]* The final limiter is `master/limiter.py`: linked-channel gain from the 4×-oversampled peak, held over a 5 ms lookahead, released at 40 dB/s, smoothed, then a static trim so the ceiling always holds (tested). `finalize()` sets make-up gain for the loudness target and re-runs the limiter until it lands within 0.05 LU, backing off when that would need more than 6 dB of reduction. Pedalboard's `Limiter` is not used for the ceiling.
 4. Export 24-bit WAV (main) and 16-bit dithered WAV. *[P0]* Matchering's 16-bit path does not dither; write the 16-bit file ourselves with TPDF dither.
 5. Analyze the output, write `analysis.json`, and index it in SQLite.
 6. Run jobs in a background worker and show the progress of each stage.
@@ -430,9 +446,11 @@ Implemented in `src/masterbench/migrations/001_init.sql`.
 - Test-fixture generator (`masterbench.fixtures`): pink noise, a sine sweep, a synthetic drum/808 loop **in F minor, with the bar-6 808 note detuned +35 cents**, a synthetic "vocal" (a sawtooth with vibrato, +30 cents on notes 3 and 6), a louder "reference" take on the loop, and a clipped file.
 - *Done when:* `uv run pytest` passes and the spike runs end to end. **Met on Linux; the spike still has to be re-run on the Mac** (plugin loading, Homebrew codecs, FSEvents; see `NOTES.md`).
 
-**Phase 1: Core mastering MVP + database + watch folder**
+**Phase 1: Core mastering MVP + database + watch folder — DONE (2026-11-24)**
 - Validation, the Matchering pipeline, exports, run manifests, **SQLite indexing and `reindex`**, the reference library, the core loudness analysis, the Master tab with simple players, and the **watch folder** (5.19, analyze-only by default).
 - *Done when:* Robin can master a Logic bounce against a saved genre reference in under 3 clicks and get a 24-bit WAV at about −14 LUFS / ≤ −1 dBTP; a file dropped into the Inbox gets analyzed with a notification; deleting the DB and running `reindex` restores it.
+- **Met on fixtures:** in the browser, choosing a file and clicking Master (2 clicks, default reference preselected) gave −14.0 LUFS / −1.0 dBTP; Inbox files are analyzed once with the genre from the subfolder; `reindex` after deleting the DB restores identical rows (tested).
+- **Not yet checked on the Mac:** a real Logic bounce, the macOS notification itself (the tests stub it), and FSEvents. The UI has no Inbox-specific list beyond the "recent run or Inbox file" picker.
 
 **Phase 2: Compare, analyze, streaming preview, progress v1**
 - The synced A/B/C player with blind mode (saved to the DB), the spectrum and band-delta analysis, the stereo checks, the flags, **streaming previews** (5.11), and **progress tracker v1** (trend charts and blind-test history).

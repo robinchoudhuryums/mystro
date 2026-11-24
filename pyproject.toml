@@ -46,6 +46,10 @@ src = ["src", "tests", "scripts"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# gr.Progress() as a default argument is how Gradio injects the progress tracker.
+"src/masterbench/ui/*" = ["B008"]
+
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "basic"
@@ -57,4 +61,8 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
     "slow: exercises heavy third-party libraries (deselect with -m 'not slow')",
+]
+filterwarnings = [
+    # Matchering imports scipy.ndimage.filters; tracked in NOTES.md.
+    "ignore:Please import `maximum_filter1d`:DeprecationWarning",
 ]
