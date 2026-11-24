@@ -59,7 +59,14 @@ def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
 
     (data_root / "masterbench.db").unlink()
     reindexed = runner.invoke(app, ["reindex"])
-    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references"
+    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references, 0 blind tests"
+
+    run_id = min(p.parent.name for p in data_root.glob("projects/loop/runs/*/master_24.wav"))
+    previewed = runner.invoke(app, ["preview", run_id])
+    assert previewed.exit_code == 0, previewed.output
+    assert "Ogg Vorbis" in previewed.stdout
+    assert "Spotify (Normal) plays this unchanged." in previewed.stdout
+    assert runner.invoke(app, ["preview", "20260101-000000-abcdef"]).exit_code == 1
 
 
 def test_errors_exit_nonzero_with_a_message(data_root: Path, fx: dict[str, Path]) -> None:

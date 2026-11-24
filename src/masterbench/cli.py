@@ -13,6 +13,7 @@ import typer
 from masterbench import audio_io, config, fixtures, index, summary
 from masterbench.master import pipeline
 from masterbench.master.matchering_engine import MasteringError
+from masterbench.preview import streaming
 from masterbench.references import library
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="MasterBench")
@@ -20,7 +21,13 @@ ref_app = typer.Typer(no_args_is_help=True, help="Manage the genre reference lib
 app.add_typer(ref_app, name="ref")
 
 AudioFile = Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]
-ENGINE_ERRORS = (MasteringError, library.ReferenceError, audio_io.AudioError)
+ENGINE_ERRORS = (
+    MasteringError,
+    library.ReferenceError,
+    audio_io.AudioError,
+    streaming.PreviewError,
+    LookupError,
+)
 
 
 def _fail(exc: Exception) -> typer.Exit:
@@ -109,6 +116,32 @@ def analyze(
     except ENGINE_ERRORS as exc:
         raise _fail(exc) from exc
     typer.echo(summary.as_text(result))
+
+
+@app.command()
+def preview(
+    run_id: Annotated[str, typer.Argument(help="Id of a master run, as printed by 'master'.")],
+    force: Annotated[bool, typer.Option("--force", help="Render again even if cached.")] = False,
+) -> None:
+    """Render codec previews of a master and show what streaming platforms will do to it."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        result = streaming.render(run, settings, force)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"master true peak {result.source_true_peak_dbtp:+.2f} dBTP")
+    for codec in result.codecs:
+        typer.echo(
+            f"{codec.label:<34} {codec.true_peak_dbtp:+.2f} dBTP ({codec.peak_change_db:+.2f} dB)"
+            f"  {run.run_dir / codec.decoded_file}"
+        )
+    for reason in result.skipped:
+        typer.echo(f"skipped {reason}")
+    for flag in result.flags:
+        typer.echo(summary.flag_line(flag))
+    for gain in result.platforms:
+        typer.echo(gain.message)
 
 
 @app.command()

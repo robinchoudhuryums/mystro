@@ -24,7 +24,8 @@ _TAKE_SUFFIX = re.compile(r"[\s_\-]+(?:v|ver|mix|bounce|master)[\s_\-]*\d+$", re
 
 
 def now_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """UTC timestamp with milliseconds, so runs made in the same second still sort in order."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def title_from_filename(path: Path) -> str:

@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 and 1 done (2026-11-24). Next: Phase 2.
+**Status:** Phases 0, 1 and 2 done (2026-11-24). Next: Phase 3.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -22,8 +22,19 @@ edited in place below and marked *[P0]*):
 - Every master runs Matchering with its limiter off, then gain to the loudness target, then
   our limiter. A target needing more than 6 dB of limiting is not chased.
 - Index writes live in `index.py`; `db.py` only connects and migrates.
-- Loudness-matched playback will be done with gain nodes in the Phase 2 player, so no
-  `preview_lm.wav` is written.
+- Loudness-matched playback is done with gain nodes in the player, so no `preview_lm.wav`
+  is written.
+
+**Decisions made in Phase 2** (marked *[P2]* below):
+- Spectra and stereo figures come from one set of Welch auto/cross spectra per file. Band
+  levels are stored relative to integrated loudness, so any two files compare at equal
+  loudness by subtraction.
+- The player is a Gradio 6 `gr.HTML` component with `js_on_load`; blind-test results go back
+  through its `server_functions`. All sources play at once and switching is a 15 ms gain
+  crossfade.
+- Platform normalization is reported as numbers and messages, not rendered as audio.
+- Blind tests are JSON files under `projects/<slug>/blind_tests/`, indexed like runs.
+- Timestamps carry milliseconds so runs made in the same second keep their order.
 
 ---
 
@@ -94,6 +105,7 @@ Keep the **engine** (pure Python, no UI imports) separate from the **interfaces*
 pyproject.toml           ✓
 uv.lock                  ✓
 scripts/verify_stack.py  ✓ Phase 0 verification spike
+scripts/check_player.js  ✓ [P2] browser check of the player (needs a running UI)
 src/masterbench/
   migrations/            ✓ 001_init.sql, 002_..., applied in order (packaged)
   config.py            ✓ paths, defaults, targets; loads ~/MasterBench/settings.toml
@@ -107,14 +119,16 @@ src/masterbench/
   notify.py            ✓ [P1] macOS notifications (terminal-notifier or osascript)
   analysis/
     flags.py           ✓ [P1] Flag dataclass
-    loudness.py        ✓ LUFS (I/S/M), true peak, LRA, PLR/crest
-    spectrum.py        # smoothed spectrum, band energies, deltas vs reference/target curve
-    stereo.py          # correlation, width, low-end mono check (<120 Hz)
+    loudness.py        ✓ LUFS (I/S/M), true peak, LRA, PLR/crest, short-term curve
+    spectrum.py        ✓ smoothed spectrum, band energies, deltas vs reference
+                       # still to add: deltas vs target curve (Phase 6)
+    stereo.py          ✓ correlation (overall, per band), side/mid, low-end mono check
+    compare.py         ✓ [P2] band and stereo flags in plain language
     musical.py         # key, tempo, beat grid (shared by 808 tools, vocal tuning, ref matching)
     sections.py        # automatic section detection + manual markers (5.15)
     detectors.py       # sibilance, resonances, mud, harshness, vocal consistency (5.16)
     lowend.py          # 808 pitch vs key, kick/808 clash (5.17)
-    report.py          ✓ AnalysisReport dataclass, JSON round trip (loudness only so far)
+    report.py          ✓ AnalysisReport: loudness, spectrum, bands, stereo, deltas, flags
   master/
     matchering_engine.py  ✓ wrapper around mg.process with our options
     limiter.py         ✓ [P1] lookahead true-peak limiter and loudness targeting
@@ -124,7 +138,7 @@ src/masterbench/
     pipeline.py        ✓ validate -> Matchering -> limit -> export -> analyze -> index
                        # still to add: pre/post chains (Phase 3), curve match (Phase 6)
   preview/
-    streaming.py       # codec encode + platform normalization previews (5.11)
+    streaming.py       ✓ codec round trips, post-encode peaks, platform gains (5.11)
     speakers.py        # phone/earbuds/car/laptop/club/mono simulation (5.12)
   references/
     library.py         ✓ reference CRUD; caches each reference's analysis
@@ -143,7 +157,9 @@ src/masterbench/
     mix_assistant.py   # vocal chain, de-esser, rider, dynamic EQ carve, sum (5.24)
   release/
     versions.py        # instrumental / a cappella with locked processing (5.20)
-  progress.py          # trend queries, habit detection, AI trend summary (5.18)
+  progress.py          ✓ per-track points, recurring flags, blind-test history
+                       # still to add: habit detection, AI summary (Phase 7)
+  blind.py             ✓ [P2] blind-test records (JSON, source of truth)
   monitoring.py        # calibration tone, session timer, break reminders (5.21)
   projects.py          ✓ project and run storage, run manifests
   batch.py             # EP mode and consistency report
@@ -154,8 +170,10 @@ src/masterbench/
     prompt.md          # versioned prompt template
     trends_prompt.md   # versioned prompt for the progress summary
   ui/
-    app.py             ✓ Gradio Blocks app: Master and Library tabs so far (section 6)
-    ab_player.js       # synced, gain-matched A/B/C player (Web Audio)
+    app.py             ✓ Gradio Blocks app: Master, Compare, Analyze, Progress, Library
+    player.py          ✓ [P2] player component, sources per run, blind-test saving
+    charts.py          ✓ [P2] Plotly figures
+    ab_player.js       ✓ synced, gain-matched A/B/C player (Web Audio)
     pitch_editor.js    # note-level pitch view and editor
 quick_action/          # Shortcuts/Automator script + install instructions
 launchd/               # optional LaunchAgent plist for the watch folder
@@ -177,12 +195,14 @@ The root is `~/MasterBench`, or `$MASTERBENCH_HOME` when set.
   presets/chains/<name>.toml
   projects/<track-slug>/
     track.json                 # slug, title, genre; source of truth for the tracks table
+    blind_tests/<id>.json      # one finished blind test each
     input/<original bounce>    # same name + different content gets a hash suffix
     stems/<model or "logic">/<stem>.wav       (cached separation or imported stems)
     runs/<timestamp>-<short-id>/
       run.json        # all settings: reference/curve, chain preset, targets, lib versions
       master_24.wav   master_16.wav
-      previews/       # codec, platform and speaker-sim renders (cached, deletable)
+      previews/       # codec round trips + streaming.json (cached, deletable);
+                      # speaker-sim renders join them in Phase 6
       analysis.json   notes.md (if generated)
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
     vocal/<take>/tuned_<settings-hash>.wav, pitch_report.json
@@ -276,7 +296,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 ### 5.11 Streaming preview
 - **Codec preview:** encode the master as Ogg Vorbis ~320 kbps (Spotify-like), AAC 256 (Apple-like) and Opus. Decode back and add each to the A/B player.
 - **Peaks after encoding:** measure the true peak of each decoded file. Flag when encoding pushes peaks above −1 dBTP (or to clipping), and suggest a lower ceiling (e.g. −1.5 or −2 dBTP) for loud masters.
-- **Platform normalization:** simulate Spotify's Loud (−11 LUFS), Normal (−14) and Quiet (−19) settings, plus a generic −14 profile for other platforms. Show how much gain each platform would apply ("Spotify will turn this down 4.2 dB"). **Verify Spotify's current normalization rules**, including how it handles quiet masters and its Loud-mode limiter, and implement those rules rather than plain gain offsets.
+- **Platform normalization:** simulate Spotify's Loud (−11 LUFS), Normal (−14) and Quiet (−19) settings, plus a generic −14 profile for other platforms. Show how much gain each platform would apply ("Spotify will turn this down 4.2 dB"). *[P2]* Implemented from Spotify's "Loudness normalization" support article as quoted in search results on 2026-11-24 (the page itself was unreachable from the build sandbox; re-read it on the Mac): louder masters are turned down; quieter ones are turned up only until peaks reach −1 dBFS (their example: −20 LUFS with a −5 dBFS peak plays at −16); Loud applies the full gain with a limiter (−1 dB threshold, 5 ms attack, 100 ms decay); the web player and third-party devices do not normalize. Versions of the article disagree on true-peak advice for masters louder than −14 LUFS (−1 or −2 dBTP).
 - Cache the renders under `runs/<id>/previews/`.
 
 ### 5.12 Speaker simulation
@@ -452,9 +472,11 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met on fixtures:** in the browser, choosing a file and clicking Master (2 clicks, default reference preselected) gave −14.0 LUFS / −1.0 dBTP; Inbox files are analyzed once with the genre from the subfolder; `reindex` after deleting the DB restores identical rows (tested).
 - **Not yet checked on the Mac:** a real Logic bounce, the macOS notification itself (the tests stub it), and FSEvents. The UI has no Inbox-specific list beyond the "recent run or Inbox file" picker.
 
-**Phase 2: Compare, analyze, streaming preview, progress v1**
+**Phase 2: Compare, analyze, streaming preview, progress v1 — DONE (2026-11-24)**
 - The synced A/B/C player with blind mode (saved to the DB), the spectrum and band-delta analysis, the stereo checks, the flags, **streaming previews** (5.11), and **progress tracker v1** (trend charts and blind-test history).
 - *Done when:* LUFS matches ffmpeg ebur128 within ±0.1 LU on the fixtures, switching sources keeps the playhead with no level jump, codec previews show post-encode true peak, and the Progress tab shows trends across at least 3 tracks.
+- **Met:** loudness within ±0.1 LU (tested); in headless Chromium the playhead moved 9 ms across a switch and matched sources sat at one loudness (`scripts/check_player.js`, 10 checks); codec previews report post-encode true peak and are sample-aligned (tested); the Progress tab charted three tracks.
+- **Not done, by choice or limit:** nobody has listened to the player (headless browser only); loop points are set at the playhead with buttons, with no waveform or drag yet; section-jump buttons wait for Phase 6; platform normalization is numbers, not audio.
 
 **Phase 3: Chains and plugins**
 - Built-in modules, plugin scan and loading, presets, and pre/post-chain integration (the limiter-double-up rule).

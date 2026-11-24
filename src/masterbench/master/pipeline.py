@@ -82,6 +82,15 @@ def analyze(
     mix = analysis.analyze_audio(
         audio, info, project.input_path, "mix", settings, project.input_sha256
     )
+    settings_used: dict = {}
+    reference = _genre_default(paths, project.track.genre)
+    reports = {"mix": mix}
+    if reference is not None:
+        reports = {
+            "mix": analysis.against_reference(mix, reference.report, settings),
+            "reference": reference.report,
+        }
+        settings_used["reference"] = _reference_settings(reference)
     manifest = RunManifest(
         id=projects.new_run_id(),
         track=project.track,
@@ -90,9 +99,27 @@ def analyze(
         input_file=str(project.input_path.relative_to(project.dir)),
         input_sha256=project.input_sha256,
         original_path=str(source),
+        settings=settings_used,
         lib_versions=projects.lib_versions(),
     )
-    return _finish(paths, project, manifest, {"mix": mix}, progress)
+    return _finish(paths, project, manifest, reports, progress)
+
+
+def _genre_default(paths: Paths, genre: str | None) -> library.Reference | None:
+    if not genre:
+        return None
+    try:
+        return library.get(paths, genre, "default")
+    except library.ReferenceError:
+        return None
+
+
+def _reference_settings(reference: library.Reference) -> dict[str, str]:
+    return {
+        "spec": reference.spec,
+        "path": str(reference.path),
+        "sha256": reference.report.sha256,
+    }
 
 
 def master(
@@ -133,11 +160,7 @@ def master(
         original_path=str(source),
         settings={
             "mode": "matchering",
-            "reference": {
-                "spec": reference.spec,
-                "path": str(reference.path),
-                "sha256": reference.report.sha256,
-            },
+            "reference": _reference_settings(reference),
             "target_lufs": options.target_lufs,
             "ceiling_dbtp": options.ceiling_dbtp,
         },
@@ -157,7 +180,9 @@ def master(
             "Expect audible pumping or distortion; a lower target will sound cleaner."
         )
         flags.append(Flag("heavy_limiting", "warn", message, final.max_reduction_db))
-    mastered = replace(mastered, flags=flags)
+    mastered = replace(mastered, flags=[*mastered.flags, *flags])
+    mix = analysis.against_reference(mix, reference.report, settings)
+    mastered = analysis.against_reference(mastered, reference.report, settings)
 
     stats = {
         "gain_db": round(final.gain_db, 3),

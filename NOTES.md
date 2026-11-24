@@ -125,6 +125,59 @@ with Master and Library tabs. 110 tests pass.
 - The UI stores an uploaded file's Gradio temp path as `original_path` in the manifest.
   The copy under `projects/<slug>/input/` is what matters.
 
+## Phase 2: compare, analyze, streaming previews, progress (2026-11-24)
+
+### What was built
+
+Spectrum, band and stereo analysis with flags; codec previews and platform gains
+(`masterbench preview RUN_ID`); the A/B/C player; Compare, Analyze and Progress tabs.
+140 tests pass.
+
+### Decisions
+
+- **One spectral pass per file:** Welch auto- and cross-spectra (32768-sample segments) feed
+  the smoothed spectrum, the band levels and every stereo figure. Band correlation is the
+  real part of the cross-spectrum over the band, so no per-band filtering is needed.
+- **Equal-loudness comparison by construction:** band levels and spectra are stored in dB
+  relative to the file's integrated loudness. A delta between two files is a subtraction.
+- **Stereo flags have a dead zone:** correlation below -0.2 is a phase problem; between
+  there and +0.3 it is "wide". Uncorrelated noise sits near 0 and must not read as broken.
+- **Player:** every source is decoded up front and all play together from one start time,
+  each through a gain node. The selected one is audible; switching is a 15 ms crossfade.
+  That makes sync exact and removes the need for seeking on a switch. Matching plays every
+  source at the level of the quietest one, so nothing clips. Cost: decoded audio for all
+  sources sits in memory (about 90 MB per 4-minute stereo source at 48 kHz).
+- **Blind mode** shuffles the order, hides names and levels, forces level matching, and
+  records the ranking and the mapping.
+- **Analysis-only runs compare against the genre's default reference** when there is one,
+  so watch-folder results already say where the balance is off.
+
+### Measurements
+
+| Check | Result |
+|---|---|
+| Pink noise band levels | equal energy per octave within 0.6 dB across the seven bands |
+| Matchering on the fixture loop | worst band delta vs the reference drops from 2.5 dB (mix) to 1.2 dB (master) |
+| Codec round trip of the -14 LUFS fixture master (-1.05 dBTP) | Vorbis -0.98, AAC -0.88, Opus 128k -0.64 dBTP; all within 2 samples of the master's timing |
+| Player in headless Chromium | playhead +9 ms across a switch, one audible source, matched loudness spread 0.000 LU |
+| Full analysis of a 206 s, 48 kHz file | 6.6 s |
+
+The Opus result is worth knowing: even a master held to -1 dBTP came back at -0.64 dBTP on
+this fixture, and the preview then suggests a -1.5 dBTP ceiling.
+
+### Known gaps
+
+- **Spotify's rules were not read from the live page.** `support.spotify.com` is blocked in
+  the build sandbox, so the rules come from that article as quoted in search results. Check
+  them against the page before trusting the messages for a release.
+- The player has only been run headless. Crossfade clicks, the feel of the loop buttons and
+  memory use with long tracks need ears and a real browser.
+- Loop points are set at the playhead with two buttons; there is no waveform or drag.
+- Platform normalization is reported, not auditioned. Spotify's Loud-mode limiter is
+  described in the message but not simulated.
+- Runs made in Phase 1 have no stored spectrum; the Analyze tab says so and a new
+  `analyze` or `master` run fills it in.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -140,6 +193,8 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 5. **watchdog** on the FSEvents backend (inotify was used here).
 6. **Notifications** through `osascript` or `terminal-notifier` (only the latter can open
    the run link on click), the Quick Action, and the LaunchAgent.
-7. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
+7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind
+   mode), and Spotify's normalization article against `preview/streaming.py`.
+8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while
    `masterbench watch` runs.

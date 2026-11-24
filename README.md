@@ -6,8 +6,9 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phases 0 and 1 are done: mastering against a reference, loudness analysis,
-the reference library, the watch folder and a first web UI. Phase 2 is next.
+**Status:** Phases 0 to 2 are done: mastering against a reference, loudness, frequency
+balance and stereo analysis, streaming previews, a level-matched A/B/C player with blind
+tests, a progress view, the reference library and the watch folder. Phase 3 is next.
 
 ## Setup (macOS)
 
@@ -54,6 +55,12 @@ Analyze bounces as they land in `~/MasterBench/Inbox/<genre>/`:
 
 ```bash
 uv run masterbench watch
+```
+
+See what the codecs and Spotify's normalization do to a master:
+
+```bash
+uv run masterbench preview 20261124-185126-7f55cf
 ```
 
 Rebuild the index from the files on disk:
@@ -104,16 +111,19 @@ src/masterbench/
   config.py         paths, targets, thresholds, settings.toml
   audio_io.py       load, save (TPDF dither), hashing
   validate.py       pre-flight checks on a mix
-  analysis/         loudness, flags, AnalysisReport
+  analysis/         loudness, spectrum, stereo, flags, AnalysisReport
   master/           Matchering wrapper, true-peak limiter, pipeline
   references/       genre reference library
   projects.py       projects, runs, manifests
   db.py, index.py   SQLite migrations, indexing, reindex
   watch.py          watch folder
-  ui/app.py         Gradio app
+  preview/          codec round trips and platform normalization
+  progress.py       per-track trends, recurring flags, blind-test history
+  ui/               Gradio app, charts, Web Audio A/B/C player
   fixtures.py       synthetic test audio with known ground truth
   migrations/       numbered SQL files, applied in order
 scripts/verify_stack.py   Phase 0 verification spike
+scripts/check_player.js   browser check of the A/B/C player
 tests/                    generated fixtures only; no audio is committed
 ```
 

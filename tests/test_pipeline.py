@@ -27,7 +27,11 @@ def dump(paths: Paths) -> dict[str, list[tuple]]:
         "runs": "SELECT r.id, t.slug, r.kind, r.settings_json, r.path, r.lib_versions_json,"
         " r.created_at FROM runs r JOIN tracks t ON t.id = r.track_id ORDER BY r.id",
         "analyses": "SELECT run_id, source_path, role, sha256, sample_rate, lufs_i, true_peak_dbtp,"
-        " lra, crest_db FROM analyses ORDER BY source_path, role, run_id",
+        " lra, crest_db, correlation, low_mono_corr FROM analyses"
+        " ORDER BY source_path, role, run_id",
+        "band_deltas": "SELECT a.source_path, a.role, a.run_id, d.band, d.delta_db, d.vs, d.section"
+        " FROM band_deltas d JOIN analyses a ON a.id = d.analysis_id"
+        " ORDER BY a.source_path, a.role, a.run_id, d.band",
         "flags": "SELECT a.source_path, f.code, f.severity, f.message, f.value FROM flags f"
         " JOIN analyses a ON a.id = f.analysis_id ORDER BY a.source_path, f.code",
         "references": "SELECT genre, name, path, is_default, notes FROM reference_tracks"
@@ -186,12 +190,13 @@ def test_deleting_the_database_and_reindexing_restores_it(
         index.sync_references(conn, paths)
     before = dump(paths)
     assert len(before["runs"]) == 3 and len(before["references"]) == 1 and before["flags"]
+    assert len(before["band_deltas"]) == 7 * 5, "mix and master of two runs, mix of the third"
 
     for leftover in paths.root.glob("masterbench.db*"):
         leftover.unlink()
     with index.open_index(paths) as conn:
         counts = index.reindex(conn, paths)
-    assert counts == {"tracks": 2, "runs": 3, "references": 1}
+    assert counts == {"tracks": 2, "runs": 3, "references": 1, "blind tests": 0}
     assert dump(paths) == before
 
     with index.open_index(paths) as conn:
@@ -206,5 +211,36 @@ def test_reindex_drops_tracks_whose_folder_is_gone(
     doomed = pipeline.analyze(fx["clipped"], paths, settings)
     shutil.rmtree(doomed.run_dir.parent.parent)
     with index.open_index(paths) as conn:
-        assert index.reindex(conn, paths) == {"tracks": 1, "runs": 1, "references": 0}
+        counts = index.reindex(conn, paths)
+        assert counts == {"tracks": 1, "runs": 1, "references": 0, "blind tests": 0}
         assert [r["slug"] for r in conn.execute("SELECT slug FROM tracks")] == ["loop"]
+
+
+def test_reports_compare_frequency_balance_with_the_reference(
+    paths: Paths, settings: Settings, reference: Reference, fx: dict[str, Path]
+) -> None:
+    result = pipeline.master(fx["loop"], options(settings), paths, settings)
+    mix, master = result.reports["mix"], result.reports["master"]
+    assert mix.band_deltas is not None and master.band_deltas is not None
+    assert set(mix.band_deltas) == {
+        "sub",
+        "bass",
+        "low_mids",
+        "mids",
+        "upper_mids",
+        "presence",
+        "air",
+    }
+    worst = lambda deltas: max(abs(v) for v in deltas.values())  # noqa: E731
+    assert worst(master.band_deltas) < worst(mix.band_deltas), "matching moves toward the reference"
+    assert result.reports["reference"].band_deltas is None
+    assert mix.spectrum is not None and mix.stereo is not None and mix.short_term_lufs
+
+    analyzed = pipeline.analyze(fx["pink_noise"], paths, settings, genre="hip-hop")
+    assert set(analyzed.reports) == {"mix", "reference"}, "compared with the genre default"
+    assert analyzed.manifest.settings["reference"]["spec"] == "hip-hop/reference"
+    codes = {flag.code for flag in analyzed.flags}
+    assert {"band_sub_under", "band_mids_over"} <= codes
+    assert pipeline.analyze(fx["pink_noise"], paths, settings, genre="house").reports.keys() == {
+        "mix"
+    }

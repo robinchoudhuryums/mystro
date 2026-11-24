@@ -6,16 +6,26 @@ from pathlib import Path
 
 import gradio as gr
 
-from masterbench import audio_io, index, summary
+from masterbench import audio_io, index, progress, summary
+from masterbench.analysis.compare import BAND_LABELS
 from masterbench.config import Paths, Settings
 from masterbench.master import pipeline
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
+from masterbench.preview import streaming
+from masterbench.preview.streaming import StreamingPreview
 from masterbench.references import library
+from masterbench.ui import charts, player
 
 UPLOAD_TYPES = sorted(audio_io.LOSSLESS_EXTENSIONS)
 REFERENCE_TYPES = sorted(audio_io.AUDIO_EXTENSIONS)
-ENGINE_ERRORS = (MasteringError, library.ReferenceError, audio_io.AudioError, LookupError)
+ENGINE_ERRORS = (
+    MasteringError,
+    library.ReferenceError,
+    audio_io.AudioError,
+    streaming.PreviewError,
+    LookupError,
+)
 NO_REFERENCES = (
     "No references yet. Add one in the **Library** tab, "
     "or run `masterbench ref add <file> --genre <genre>`."
@@ -76,6 +86,84 @@ def run_view(result: RunResult) -> tuple:
     )
 
 
+def other_masters(paths: Paths, run: RunResult) -> list[tuple[str, str]]:
+    """Other master runs of the same track, as (label, run id), newest first."""
+    with index.open_index(paths) as conn:
+        rows = index.recent_runs(conn, limit=200, kind="master")
+    return [
+        (f"{r['created_at'][:16].replace('T', ' ')} ({r['id'][-6:]})", r["id"])
+        for r in rows
+        if r["slug"] == run.manifest.track.slug and r["id"] != run.manifest.id
+    ]
+
+
+def streaming_markdown(preview: StreamingPreview | None) -> str:
+    if preview is None:
+        return "Streaming previews have not been rendered for this run."
+    lines = [
+        f"Master true peak: {preview.source_true_peak_dbtp:+.2f} dBTP.",
+        "",
+        "| Codec | Encoder | True peak after decode | Change | LUFS-I |",
+        "|---|---|---|---|---|",
+    ]
+    lines += [
+        f"| {c.label} | {c.encoder} | {c.true_peak_dbtp:+.2f} dBTP | {c.peak_change_db:+.2f} dB"
+        f" | {c.lufs_i:.1f} |"
+        for c in preview.codecs
+    ]
+    lines += ["", *[f"- Skipped {reason}" for reason in preview.skipped]]
+    lines += [f"- {summary.flag_line(flag)}" for flag in preview.flags]
+    lines += [f"- {gain.message}" for gain in preview.platforms]
+    return "\n".join(lines)
+
+
+def stereo_markdown(result: RunResult) -> str:
+    rows = [(role, r.stereo) for role, r in result.reports.items() if r.stereo is not None]
+    if not rows:
+        return ""
+    bands = list(BAND_LABELS)
+    header = ["", "Correlation", "Side vs mid", "Below 120 Hz", *[BAND_LABELS[b] for b in bands]]
+    lines = ["**Stereo**", "", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for role, stereo in rows:
+        cells = [
+            role.capitalize(),
+            f"{stereo.correlation:+.2f}",
+            f"{stereo.side_mid_db:.1f} dB",
+            f"{stereo.low_mono_corr:+.2f}",
+            *[f"{stereo.band_correlation[b]:+.2f}" for b in bands],
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def analysis_view(result: RunResult, settings: Settings) -> tuple:
+    """Values for (spectrum plot, band plot, loudness plot, stereo table, flags)."""
+    return (
+        charts.spectrum(result.reports),
+        charts.band_deltas(result.reports, settings.thresholds.band_delta_db),
+        charts.loudness_over_time(result.reports),
+        stereo_markdown(result),
+        summary.flags_markdown(result),
+    )
+
+
+def progress_view(paths: Paths) -> tuple:
+    """Values for (band trend plot, loudness trend plot, flag plot, blind-test rows)."""
+    with index.open_index(paths) as conn:
+        points = progress.track_points(conn)
+        tests = progress.blind_results(conn)
+    rows = [
+        [t.created_at[:16].replace("T", " "), t.title, t.winner, " > ".join(t.ranking)]
+        for t in tests
+    ]
+    return (
+        charts.band_trends(points),
+        charts.loudness_trends(points),
+        charts.flag_frequency(progress.flag_counts(points), len(points)),
+        rows,
+    )
+
+
 def build(paths: Paths, settings: Settings) -> gr.Blocks:
     paths.ensure()
     genres, genre_default = genre_choices(paths, settings)
@@ -107,6 +195,38 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 master_player = gr.Audio(label="Master", type="filepath", interactive=False)
                 ref_player = gr.Audio(label="Reference", type="filepath", interactive=False)
                 downloads = gr.File(label="Files", file_count="multiple", interactive=False)
+        with gr.Tab("Compare") as compare_tab:
+            with gr.Row():
+                cmp_run = gr.Dropdown(label="Run", choices=run_choices(paths), value=None, scale=2)
+                cmp_extra = gr.Dropdown(
+                    label="Also load masters from other runs of this track",
+                    choices=[],
+                    multiselect=True,
+                    scale=2,
+                )
+                cmp_render = gr.Button("Render streaming previews", scale=1)
+            ab_player = player.component(paths)
+            gr.Markdown(
+                "Loudness matching only changes playback level; exported files are untouched."
+            )
+            stream_md = gr.Markdown()
+        with gr.Tab("Analyze") as analyze_tab:
+            an_run = gr.Dropdown(label="Run", choices=run_choices(paths), value=None)
+            spectrum_plot = gr.Plot()
+            band_plot = gr.Plot()
+            loudness_plot = gr.Plot()
+            stereo_md = gr.Markdown()
+            an_flags = gr.Markdown()
+        with gr.Tab("Progress") as progress_tab:
+            trend_plot = gr.Plot()
+            loudness_trend_plot = gr.Plot()
+            flag_plot = gr.Plot()
+            blind_table = gr.Dataframe(
+                headers=["When", "Track", "Preferred", "Ranking"],
+                label="Blind tests",
+                type="array",
+                interactive=False,
+            )
         with gr.Tab("Library"):
             table = gr.Dataframe(
                 value=library_rows(paths),
@@ -152,7 +272,14 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 )
             except ENGINE_ERRORS as exc:
                 raise gr.Error(str(exc)) from exc
-            return (*run_view(result), gr.Dropdown(choices=run_choices(paths)))
+            choices = run_choices(paths)
+            run_id = result.manifest.id
+            return (
+                *run_view(result),
+                gr.Dropdown(choices=choices),
+                gr.Dropdown(choices=choices, value=run_id),
+                gr.Dropdown(choices=choices, value=run_id),
+            )
 
         def on_analyze(uploaded, run_id, selected_genre, progress=gr.Progress()):
             try:
@@ -165,7 +292,14 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 )
             except ENGINE_ERRORS as exc:
                 raise gr.Error(str(exc)) from exc
-            return (*run_view(result), gr.Dropdown(choices=run_choices(paths)))
+            choices = run_choices(paths)
+            run_id = result.manifest.id
+            return (
+                *run_view(result),
+                gr.Dropdown(choices=choices),
+                gr.Dropdown(choices=choices, value=run_id),
+                gr.Dropdown(choices=choices, value=run_id),
+            )
 
         def on_open(run_id: str | None):
             if not run_id:
@@ -173,13 +307,14 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             return run_view(pipeline.load_run(paths, run_id))
 
         def on_load(request: gr.Request):
-            """Deep link from a notification: /?run=<id> opens that run."""
+            """Deep link from a notification: /?run=<id> opens that run on every tab."""
             run_id = request.query_params.get("run")
             choices = run_choices(paths)
             if not run_id or run_id not in {value for _, value in choices}:
-                return (*(gr.skip(),) * len(view), gr.Dropdown(choices=choices))
-            result = pipeline.load_run(paths, run_id)
-            return (*run_view(result), gr.Dropdown(choices=choices, value=run_id))
+                same = gr.Dropdown(choices=choices)
+                return (*(gr.skip(),) * len(view), same, same, same)
+            chosen = gr.Dropdown(choices=choices, value=run_id)
+            return (*run_view(pipeline.load_run(paths, run_id)), chosen, chosen, chosen)
 
         def on_add(file, selected_genre, notes, make_default, current_genre):
             if not file or not selected_genre:
@@ -201,11 +336,66 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 gr.Dropdown(choices=all_genres, value=ref.genre),
             )
 
+        def load(run_id: str | None) -> RunResult | None:
+            return pipeline.load_run(paths, run_id) if run_id else None
+
+        def on_compare_run(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                return player.config(None), gr.Dropdown(choices=[], value=[]), ""
+            preview = streaming.load(result) if result.manifest.outputs else None
+            extras = gr.Dropdown(choices=other_masters(paths, result), value=[])
+            text = streaming_markdown(preview) if result.manifest.outputs else ""
+            return player.config(result, preview), extras, text
+
+        def on_compare_extra(run_id: str | None, extra_ids: list[str] | None):
+            result = load(run_id)
+            if result is None:
+                return player.config(None)
+            preview = streaming.load(result) if result.manifest.outputs else None
+            return player.config(
+                result, preview, [pipeline.load_run(paths, i) for i in extra_ids or []]
+            )
+
+        def on_render(run_id: str | None, extra_ids: list[str] | None):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                preview = streaming.render(result, settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            extras = [pipeline.load_run(paths, i) for i in extra_ids or []]
+            return player.config(result, preview, extras), streaming_markdown(preview)
+
+        def on_analysis_run(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                return (gr.skip(),) * 5
+            return analysis_view(result, settings)
+
+        def refresh_runs(current: str | None):
+            return gr.Dropdown(choices=run_choices(paths), value=current)
+
         genre.change(on_genre, genre, reference)
-        run.click(on_master, [mix, previous, genre, reference, target, ceiling], [*view, previous])
-        analyze.click(on_analyze, [mix, previous, genre], [*view, previous])
+        after_run = [*view, previous, cmp_run, an_run]
+        run.click(on_master, [mix, previous, genre, reference, target, ceiling], after_run)
+        analyze.click(on_analyze, [mix, previous, genre], after_run)
+        cmp_run.change(on_compare_run, cmp_run, [ab_player, cmp_extra, stream_md])
+        cmp_extra.input(on_compare_extra, [cmp_run, cmp_extra], ab_player)
+        cmp_render.click(on_render, [cmp_run, cmp_extra], [ab_player, stream_md])
+        an_run.change(
+            on_analysis_run, an_run, [spectrum_plot, band_plot, loudness_plot, stereo_md, an_flags]
+        )
+        compare_tab.select(refresh_runs, cmp_run, cmp_run)
+        analyze_tab.select(refresh_runs, an_run, an_run)
+        progress_tab.select(
+            lambda: progress_view(paths),
+            None,
+            [trend_plot, loudness_trend_plot, flag_plot, blind_table],
+        )
         previous.input(on_open, previous, view)
-        app.load(on_load, None, [*view, previous])
+        app.load(on_load, None, after_run)
         add.click(
             on_add,
             [new_file, new_genre, new_notes, new_default, genre],

@@ -79,6 +79,7 @@ def _pink(n: int, rng: np.random.Generator) -> np.ndarray:
     spectrum = np.fft.rfft(rng.standard_normal(n))
     freqs = np.fft.rfftfreq(n)
     freqs[0] = freqs[1]
+    spectrum[0] = 0.0
     return np.fft.irfft(spectrum / np.sqrt(freqs), n)
 
 

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from masterbench import db, projects
+from masterbench import blind, db, projects
 from masterbench.analysis.report import AnalysisReport
 from masterbench.config import Paths
 from masterbench.projects import RunManifest, Track
@@ -53,7 +53,8 @@ def _insert_analysis(
     cursor = conn.execute(
         "INSERT INTO analyses (run_id, source_path, role, sha256, sample_rate, channels, bit_depth,"
         " duration_s, lufs_i, lufs_s_max, lufs_m_max, true_peak_dbtp, sample_peak_dbfs, lra, plr,"
-        " crest_db, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " crest_db, correlation, low_mono_corr, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             report.source_path,
@@ -71,6 +72,8 @@ def _insert_analysis(
             loud.lra,
             loud.plr,
             loud.crest_db,
+            report.stereo.correlation if report.stereo else None,
+            report.stereo.low_mono_corr if report.stereo else None,
             created_at,
         ),
     )
@@ -79,6 +82,10 @@ def _insert_analysis(
     conn.executemany(
         "INSERT INTO flags (analysis_id, code, severity, message, value) VALUES (?, ?, ?, ?, ?)",
         [(analysis_id, f.code, f.severity, f.message, f.value) for f in report.flags],
+    )
+    conn.executemany(
+        "INSERT INTO band_deltas (analysis_id, band, delta_db, vs) VALUES (?, ?, ?, 'reference')",
+        [(analysis_id, band, delta) for band, delta in (report.band_deltas or {}).items()],
     )
     return analysis_id
 
@@ -141,8 +148,32 @@ def sync_references(conn: sqlite3.Connection, paths: Paths) -> int:
         return _sync_references(conn, paths)
 
 
+def _sync_blind_tests(conn: sqlite3.Connection, paths: Paths) -> int:
+    conn.execute("DELETE FROM blind_tests")
+    tests = blind.load_all(paths)
+    for test in tests:
+        conn.execute(
+            "INSERT INTO blind_tests (track_id, candidates_json, ranking_json, revealed_json,"
+            " created_at) SELECT id, ?, ?, ?, ? FROM tracks WHERE slug = ?",
+            (
+                json.dumps(test.candidates),
+                json.dumps(test.ranking),
+                json.dumps(test.revealed),
+                test.created_at,
+                test.track_slug,
+            ),
+        )
+    return len(tests)
+
+
+def sync_blind_tests(conn: sqlite3.Connection, paths: Paths) -> int:
+    """Make the blind_tests table mirror the result files on disk."""
+    with _transaction(conn):
+        return _sync_blind_tests(conn, paths)
+
+
 def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
-    """Rebuild every row that comes from files on disk: tracks, runs, analyses, references."""
+    """Rebuild every row from the files on disk: tracks, runs, analyses, references, tests."""
     with _transaction(conn):
         conn.execute("DELETE FROM runs")
         conn.execute("DELETE FROM analyses")
@@ -158,8 +189,14 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
             manifest, reports = projects.read_run(run_dir)
             _index_run(conn, manifest, run_dir, reports)
         references = _sync_references(conn, paths)
+        blind_tests = _sync_blind_tests(conn, paths)
     tracks = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
-    return {"tracks": tracks, "runs": len(run_dirs), "references": references}
+    return {
+        "tracks": tracks,
+        "runs": len(run_dirs),
+        "references": references,
+        "blind tests": blind_tests,
+    }
 
 
 def input_already_run(conn: sqlite3.Connection, sha256: str, kind: str) -> bool:

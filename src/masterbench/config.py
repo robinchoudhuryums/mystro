@@ -39,6 +39,11 @@ class Thresholds:
     clip_run_samples: int = 3
     dc_offset: float = 0.001
     edge_silence_s: float = 2.0
+    band_delta_db: float = 3.0
+    low_correlation: float = 0.3
+    phase_correlation: float = -0.2
+    low_end_mono_corr: float = 0.9
+    codec_peak_dbtp: float = -1.0
 
 
 @dataclass(frozen=True)

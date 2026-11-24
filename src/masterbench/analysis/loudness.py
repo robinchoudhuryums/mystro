@@ -55,6 +55,12 @@ def windowed_loudness(
     return -0.691 + 10 * np.log10(np.maximum(mean_square, 1e-12))
 
 
+def short_term_curve(audio: np.ndarray, sample_rate: int, step_s: float = 1.0) -> list[float]:
+    """Short-term loudness sampled once per step, for loudness-over-time plots."""
+    values = windowed_loudness(k_weight(audio, sample_rate), sample_rate, SHORT_TERM_S, step_s)
+    return [round(max(FLOOR_DB, float(v)), 2) for v in values]
+
+
 def integrated(audio: np.ndarray, sample_rate: int) -> float:
     if len(audio) < int(MOMENTARY_S * sample_rate):
         return FLOOR_DB
