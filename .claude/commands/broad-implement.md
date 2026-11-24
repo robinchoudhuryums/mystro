@@ -1,0 +1,173 @@
+---
+description: "Implement selected findings from a broad scan"
+argument-hint: "<finding IDs, a batch name, G/ST expansion IDs, or FO follow-on IDs>"
+---
+
+If $ARGUMENTS is empty or missing, respond with exactly this and stop:
+
+Usage: /broad-implement <finding IDs, G/ST expansion IDs, FO follow-on IDs, or description of fixes to implement>
+Example: /broad-implement F03, F07, F12
+Example: /broad-implement Batch 2   (every finding in that batch of the scan's plan)
+Example: /broad-implement G2, ST1   (or an expansion batch: E1)
+Example: /broad-implement FO-8-3, FO-8-5   (follow-on items, by their IDs in .cycle/STATE.md)
+
+Paste or reference the findings from a prior /broad-scan session.
+
+---
+
+You are implementing specific findings from a broad scan audit.
+
+Scope: $ARGUMENTS
+
+Read CLAUDE.md (especially Common Gotchas) before starting.
+
+Rules:
+- Implement ONLY the findings specified above — nothing else
+- A batch name ("Batch 2", "E1") means every item the scan's plan lists
+  under it. Read the list from the scan report — this session's, or the
+  scan's report file .cycle/blocks/<cycle>-scan.md (the newest, if a
+  re-run has a -2); if neither is in reach, ask for it rather than
+  guessing what the batch held. A finding named by ID is read the same way
+- G (completeness gap) and ST (strategic suggestion) items from the
+  scan's EXPANSION PLAN are in scope only when named above, by ID or by
+  their E-batch. They are new capability, not fixes — see REFLECT
+- FO-<cycle>-<n> items (follow-on items an earlier session recorded) are
+  in scope only when named above by ID. Read each from the "Open follow-on
+  items" in .cycle/STATE.md, or from the summary block that reported it; if
+  neither is in this session, ask for it. List it under Findings
+  implemented by its FO ID
+- Do not fix, refactor, or improve anything outside this scope even if
+  you notice other issues — note them at the end
+- If a fix is more complex than expected, stop and describe what you
+  found before continuing
+- If a fix requires touching files that seem unrelated to the finding,
+  explain why before proceeding
+- After each fix, briefly note: what changed, files touched, anything
+  unexpected
+- Check Common Gotchas before each fix to avoid re-introducing known issues
+- Before editing a module, scan for its test doubles — mocks/stubs/fixtures
+  of that module, especially ones encoding the OLD behavior; update them as
+  part of the fix, not reactively in RUN TESTS
+
+After all fixes are complete, do the following in order:
+
+1. RUN TESTS
+Read the Test Command from CLAUDE.md's Cycle Workflow Config.
+
+  - If Test Command is `manual`: skip programmatic test execution.
+    Walk every Regression Scenario whose Subsystem overlaps a file
+    you modified. Record per-scenario outcome (PASS / FAIL /
+    NOT APPLICABLE — with reason for NOT APPLICABLE). A FAIL is
+    classified the same as a test failure below.
+
+  - Otherwise: run the test suite (use the Test Command, or
+    `npm test` if not specified). If Regression Scenarios is also
+    configured, walk them after tests pass.
+
+Note the result. If tests fail (or any scenario FAILs), classify:
+- Caused by this session's changes (fix now)
+- Pre-existing (note but don't fix)
+- Real production bug exposed by correct test/scenario (flag as
+  follow-on, don't fix here)
+
+2. REGRESSION CHECK
+For each file you modified:
+- Could this change break any caller or consumer of this function/export?
+- Did you change any interface, return type, or default value that other
+  modules depend on?
+- Is there any scenario where the old behavior was actually correct and
+  you've made it worse?
+
+3. REFLECT
+For each fix completed:
+a) Would this bug have actually fired in production this month? YES/NO
+b) Did this fix introduce a new failure mode, documented or not? YES/NO
+G/ST items answer NO to (a) — list them as new capabilities, never as
+production fixes — but still answer (b).
+Tally: [production fixes] − [new failure modes] = [net score]
+
+4. INVARIANT CHECK
+Check whether any changes could have violated invariants from the project's
+invariant library (the Invariant Library section of CLAUDE.md's Cycle
+Workflow Config). Flag any at risk.
+
+5. SUMMARY
+Produce a BROAD SCAN IMPLEMENTATION SUMMARY:
+
+---BROAD SCAN IMPLEMENTATION SUMMARY---
+Findings implemented: [list finding IDs and one-line descriptions]
+New capabilities (G/ST): [list G/ST IDs and one-line descriptions, or "None"]
+Files modified: [list all files touched]
+
+CHANGES:
+[Finding ID] | [File(s)] | [What changed]
+
+TEST RESULTS: [passed/failed — details if failed]
+REGRESSION RISKS: [any risks identified, or "None"]
+INVARIANTS AT RISK: [any invariants potentially affected, or "None"]
+NET SCORE: [production fixes] − [new failure modes] = [net]
+
+OPERATOR ACTIONS / DEPLOY:
+- [human-only step outside the PR — env var, IaC, console/dashboard, one-time migration] | BLOCKS DEPLOY: Y/N
+(repeat per action, or "None")
+Deploy: [if a Deploy Command is configured in CLAUDE.md for any modified
+subsystem, the command(s) to run, one line per subsystem; else
+"N/A — no Deploy Command configured"]
+
+(Not complete in production until blocking operator actions are done AND
+the deploy step is confirmed.)
+
+FOLLOW-ON ITEMS:
+- FO-[cycle]-[n] | [File: area] — [anything noticed but not fixed, out of scope] | → [this cycle | next audit | roadmap | decision | won't do (reason)]
+(or "None")
+
+DOCUMENTATION UPDATES NEEDED:
+- [any CLAUDE.md, README, or inline doc changes needed]
+(or "None")
+---END BROAD SCAN IMPLEMENTATION SUMMARY---
+
+FOLLOW-ON IDS (every follow-on item this session reports): number each
+FO-<cycle>-<n>, with <cycle> from .cycle/STATE.md's Cycle field and <n> one
+above the highest FO number already used for that cycle in STATE.md and
+.cycle/blocks/ (FO-<n> if the project keeps no .cycle/). Give each exactly
+one disposition:
+- this cycle — a later implement session takes it by its ID
+- next audit — the next audit whose scope covers it re-checks it, as a
+  lead and not as a finding
+- roadmap — too large for one session; /sync-docs proposes a roadmap item
+- decision — only the operator can settle it; name the choice
+- won't do (reason) — closed now, and the reason is the record
+"Noted" is not a disposition. Only if a .cycle/ directory exists: add
+every item that is not "won't do" to the "Open follow-on items" in .cycle/STATE.md, one
+line each with its ID and disposition, and remove each open item this
+session finished or closed — including one marked "confirmed as" a
+finding this session implemented.
+
+6. CHECKPOINT (optional — only if the project uses .cycle/ state)
+If a .cycle/ directory exists at the project root, create or update
+.cycle/STATE.md to reflect this session: completed findings, any
+selected findings not finished, open follow-on items, decisions made,
+and a "Where I left off" line. This lets /cycle-resume continue cleanly
+in a fresh session if context runs out. Set Phase: implement; leave Cycle
+exactly as the audit's CYCLE OPEN step set it — implement sessions never
+increment it, so every batch from one audit names its block with the
+same number. If .cycle/ does not exist, skip this step — the summary
+block above is the record, as usual.
+If STATE.md's sections still describe an EARLIER cycle (its Scope line
+says so), this is the new cycle's first checkpoint: move the old "In
+progress" and "Completed this cycle" entries to .cycle/HISTORY.md under a
+heading naming that cycle (create the file if needed), keep any pending
+item, follow-on or decision that is still live, and drop the note from
+the Scope line.
+
+ALSO write the summary block VERBATIM to
+.cycle/blocks/<cycle>-<version-or-scope>-broad-implement.md (create the
+directory if needed). §4v and §6a consume these blocks in a FRESH session
+that has none of this context, so a block that exists only in chat cannot
+reach them — STATE.md carries prose ABOUT the work, not the block itself.
+Never overwrite a block: if that name is taken (a second batch under the
+same version or scope), add the batch number before the command name —
+<cycle>-<version-or-scope>-2-broad-implement.md.
+
+After the summary, suggest running /test-sync if any test failures remain,
+and /sync-docs if any documentation updates are needed.
