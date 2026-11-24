@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "runs",
     "schema_migrations",
     "sessions",
+    "vocal_reports",
     "tracks",
 }
 

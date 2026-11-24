@@ -1,0 +1,6 @@
+description = "Fast and firm: notes land quickly and wander half as much."
+retune_ms = 30
+humanize = 0.5
+amount = 1.0
+preserve_formants = true
+engine = "rubberband"

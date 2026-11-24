@@ -176,12 +176,11 @@ def flag_frequency(counts: list[FlagCount], total: int) -> go.Figure:
 
 
 def shape_trends(points: list[TrackPoint]) -> go.Figure:
-    """How much the hook lifts, and how much of the bass is in tune, track by track."""
-    shown = [
-        p for p in points if p.hook_contrast_lu is not None or p.bass_in_tune_share is not None
-    ]
+    """How much the hook lifts, and how in tune the bass and the vocal are, track by track."""
+    measures = ("hook_contrast_lu", "bass_in_tune_share", "vocal_in_tune_share")
+    shown = [p for p in points if any(getattr(p, name) is not None for name in measures)]
     if not shown:
-        return _empty("No tracks with sections or bass notes measured yet.")
+        return _empty("No tracks with sections, bass notes or a vocal pitch report yet.")
     labels = [f"{p.title}<br>{p.created_at[:10]}" for p in shown]
     figure = go.Figure()
     figure.add_scatter(
@@ -197,9 +196,16 @@ def shape_trends(points: list[TrackPoint]) -> go.Figure:
         mode="lines+markers",
         yaxis="y2",
     )
+    figure.add_scatter(
+        x=labels,
+        y=[None if p.vocal_in_tune_share is None else 100 * p.vocal_in_tune_share for p in shown],
+        name="Vocal within ±20 cents (%)",
+        mode="lines+markers",
+        yaxis="y2",
+    )
     figure.update_layout(
         **_LAYOUT,
-        title="Hook lift and bass tuning, by track",
+        title="Hook lift, bass tuning and vocal pitch, by track",
         yaxis={"title": "LU"},
         yaxis2={"title": "%", "overlaying": "y", "side": "right", "range": [0, 105]},
     )

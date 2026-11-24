@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 7 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Next: Phase 8.
+**Status:** Phases 0 to 8 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Phase 8's blind test on a real vocal is Robin's to do. Next: Phase 9.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -100,6 +100,35 @@ edited in place below and marked *[P0]*):
   without storing. Files must be under the data root or `mcp_allowed_dirs`. `pitch_report`
   waits for Phase 8.
 
+**Decisions made in Phase 8** (marked *[P8]* below):
+- Pitch is tracked with WORLD's Harvest and StoneMask on a 5 ms grid. A note is the stable
+  stretch of a voiced run; the slide into or out of it belongs to no note. A note's centre
+  is the average of its sustained pitch, which is half-way between the pitch curve's upper
+  and lower envelope over about 0.35 s, so vibrato does not move it.
+- The correction is planned per frame and then rendered. Humanize at 100% moves a note as a
+  whole (vibrato, drift and slides are kept); at 0% every frame goes to its target. Retune
+  speed is the time taken to cover 90% of the way. Slides are shifted along with their
+  notes, or, as humanize goes to 0, snapped to scale notes (one step per slide with note
+  hold, a step per scale note without).
+- **Natural's amount is 90%, not the plan's 70 to 85%.** The acceptance criterion (30 cents
+  down to within 5) needs at least 83% before any measurement error; 90% leaves about 3.
+- Both engines get the same plan. Only corrected voiced stretches are replaced (with 20 ms
+  of room and an 8 ms crossfade in the consonant or silence around them); everything else
+  in the output is the input sample for sample. Each replaced stretch is brought back to
+  the original's level, since WORLD came out about 1 dB louder.
+- Rubber Band is driven through its command line with a pitch map, not through
+  pyrubberband, which writes 16-bit temporary files. The command line applies the map
+  about 3,860 samples early (at 44.1 kHz); the offset is measured once per run on a test
+  tone and the map delayed by it.
+- Provisional engine defaults, until Robin's blind test: Rubber Band for Natural and Tight
+  (it changes the tone less), WORLD for Hard-tune (it follows a frame-by-frame target more
+  exactly, and is the only one that can shift formants).
+- A vocal lives in `projects/<track>/vocal/<vocal-hash>/` with its report, edits and tuned
+  versions. Tuned versions are files, not runs. Pitch reports are indexed
+  (`vocal_reports`) and feed the Progress tab and a sharp/flat habit.
+- Tuning a vocal that was separated from a mix also writes the mix with that vocal swapped
+  for the tuned one, labelled preview quality.
+
 ---
 
 ## 1. Context
@@ -170,6 +199,7 @@ pyproject.toml           ✓
 uv.lock                  ✓
 scripts/verify_stack.py  ✓ Phase 0 verification spike
 scripts/check_player.js  ✓ [P2] browser check of the player (needs a running UI)
+scripts/check_vocal.js   ✓ [P8] browser check of the Vocal tab and pitch editor
 src/masterbench/
   migrations/            ✓ 001_init.sql, 002_..., applied in order (packaged)
   config.py            ✓ paths, defaults, targets; loads ~/MasterBench/settings.toml
@@ -215,10 +245,14 @@ src/masterbench/
     stem_analysis.py   ✓ vocal-to-beat, drums and bass vs mix, comparison with a reference
     workflow.py        ✓ [P4] separate / import / diagnose / rebalance-and-master
   vocal/
-    pitch_track.py     # f0 tracking, note segmentation
-    tuning.py          # scale snapping, retune speed, humanize, formant-preserving shift (5.23)
-    pitch_report.py    # cents-off per note, out-of-key notes, read-only report
-    presets/           # natural.toml, tight.toml, hard_tune.toml
+    scales.py          ✓ [P8] scales, note names, key from sung notes
+    pitch_track.py     ✓ f0 tracking, note segmentation
+    tuning.py          ✓ the correction plan: amount, humanize, retune speed, note edits (5.23)
+    engines.py         ✓ [P8] rendering with WORLD or Rubber Band, spliced into the original
+    pitch_report.py    ✓ cents-off per note, out-of-key notes, read-only report
+    presets.py         ✓ [P8] tuning presets as TOML
+    presets/           ✓ natural.toml, tight.toml, hard-tune.toml
+    workflow.py        ✓ [P8] storage, full-mix path, outside versions, engine benchmark
     mix_assistant.py   # vocal chain, de-esser, rider, dynamic EQ carve, sum (5.24)
   release/
     versions.py        ✓ instrumental / a cappella with locked processing (5.20)
@@ -236,11 +270,12 @@ src/masterbench/
     trends.py          ✓ [P7] progress summary: payload, API call, cache
     trends_prompt.md   ✓ versioned prompt for the progress summary
   ui/
-    app.py             ✓ Gradio Blocks app: every tab in section 6 except Vocal
+    app.py             ✓ Gradio Blocks app: every tab in section 6 (Vocal Mix comes in Phase 9)
+    vocal_tab.py       ✓ [P8] the Vocal tab
     player.py          ✓ [P2] player component, sources per run, blind-test saving
     charts.py          ✓ [P2] Plotly figures
     ab_player.js       ✓ synced, gain-matched A/B/C player (Web Audio)
-    pitch_editor.js    # note-level pitch view and editor
+    pitch_editor.js    ✓ note-level pitch view and editor
 quick_action/          ✓ Automator script + install instructions (untried on macOS)
 launchd/               # optional LaunchAgent plist for the watch folder
 tests/                 ✓ fixtures are generated per test session, never Robin's music
@@ -276,7 +311,8 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
                       # speaker_<profile>.wav + speakers.json
       analysis.json   notes.json + notes.md (if generated)
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
-    vocal/<take>/tuned_<settings-hash>.wav, pitch_report.json
+    vocal/<vocal-hash>/vocal.json, pitch.json, edits.json, tuned_<settings-hash>.wav + .json,
+                      # preview_<settings-hash>.wav (full-mix path), external/, benchmark.json
 ```
 Make every run reproducible from `run.json`. Never overwrite the input file.
 
@@ -463,7 +499,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - `master_file` (always creates a new run, never overwrites)
   - `suggest_reference`
   - `get_progress_trends`, `get_habits`
-  - `pitch_report` *[P7]* not yet; it needs Phase 8
+  - `pitch_report` *[P8]* done; read-only, takes a file and optionally a key and scale
   - `run_batch`
 - Read-only by default. Tools that write need a config flag (`mcp_allow_writes`). File access is limited to `~/MasterBench` and explicitly allowed folders.
 - Document the setup for Claude Code (`claude mcp add`) and the Claude desktop app config.
@@ -478,7 +514,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - **Hard-tune effect:** 0 ms, humanize off, amount 100%, hard note transitions; optional formant shift and "note hold" for the stepped effect
   - **Custom:** every control exposed
 
-  Presets are TOML like chain presets, and Robin can save his own.
+  Presets are TOML like chain presets, and Robin can save his own. *[P8]* Packaged: `natural` (100 ms, humanize 100%, amount 90%), `tight` (30 ms, 50%, 100%), `hard-tune` (0 ms, 0%, 100%, WORLD). Own presets go in `presets/tuning/`; the Vocal tab's controls are the Custom mode.
 - **Simple by default:** one screen with the detected key (with confidence and an override), the preset picker, an amount slider, and an A/B against the original. The pitch editor and the advanced controls sit behind an "Advanced" toggle. Ease of use is an explicit goal; Robin has found graphical tuners hard to navigate.
 - **Key and scale:** the detected song key (5.4), with manual override, scale choice (major, minor, modes, chromatic) and custom note sets.
 - **Pitch report (read-only, default first step):**
@@ -488,7 +524,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - % of time within ±20 cents
   - the worst phrases with timestamps
 
-  This also feeds the progress tracker.
+  This also feeds the progress tracker. *[P8]* The report is indexed per vocal; the Progress tab charts the share within ±20 cents, and a vocal that is sharp (or flat) by 8 cents or more on most tracks becomes a habit. Only tracks that also have an analyzed mix appear there.
 - **Correction:**
   - snap each note's center pitch to the nearest scale note
   - **retune speed** (how fast pitch moves to the target: 0 ms gives the hard "auto-tune" effect, 50–200 ms sounds natural)
@@ -497,7 +533,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - per-note bypass
   - **formant preservation** is required
 - **Engines:** benchmark the WORLD vocoder (pyworld) against Rubber Band R3 (pyrubberband) on Robin's vocals, and keep the better one as default. *[P0]* WORLD output comes back padded (220 samples on the fixture); trim it to the input length. Rubber Band returned the exact length.
-- **Pitch editor:** a piano-roll view of detected notes over the f0 curve. Click a note to bypass it, change its target, or drag it. Implement in `pitch_editor.js`.
+- **Pitch editor:** a piano-roll view of detected notes over the f0 curve. Click a note to bypass it, change its target, or drag it. Implement in `pitch_editor.js`. *[P8]* Click bypasses, vertical drag retargets by semitones, a click on an edited note undoes it. Notes cannot be split, joined or moved in time, and there is no playback from the editor.
 - **Output:** `tuned_<settings-hash>.wav`, same length and start, ready to drag back into Logic. Add the original vs tuned A/B in the player.
 - **Benchmark against commercial tuners:** Robin has used a Waves tuning plugin (likely Waves Tune LT). Phase 8 includes a blind A/B of our Natural and Hard-tune output against his Waves result and Logic's Flex Pitch on the same vocal. Optionally, try hosting his Waves tuner through Pedalboard: Waves ships plugins inside a WaveShell, so check `load_plugin`'s `plugin_name` support. Graphical-capture tuners like Tune LT probably can't run headless; real-time auto tuners might.
 - Position it honestly: Logic's Flex Pitch and Pitch Correction remain the tools for detailed manual work. This feature's value is ease of use, the pitch report, quick scale-aware correction, and the learning data.
@@ -587,13 +623,17 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **MCP, what was and was not shown:** `compare_runs` and `get_habits` are called through the MCP SDK's client, in process and against `masterbench mcp` as a stdio subprocess (tested). The Claude Code CLI (2.1.331) registered the server with `claude mcp add` and reported it connected. **No Claude model has yet called a tool in a conversation**, and the desktop app config is untried.
 - **Untried:** the trend summary against the real API (stand-in server only, as with mix notes); the break notification on macOS; calibration with a real SPL meter; alternate versions from real Logic stems, where bus processing in Logic will make the stems differ from the bounce (flagged as `stems_differ_from_mix`).
 
-**Phase 8: Vocal tuning**
+**Phase 8: Vocal tuning — DONE on fixtures (2026-11-24); the blind test on a real vocal is still to do**
 - Pitch tracking, the pitch report, correction (retune speed, humanize, amount, formant preservation), the engine benchmark, the pitch editor, and export.
 - Includes the Natural/Tight/Hard-tune presets, the simple and Advanced views, and the full-mix separate → tune → recombine path.
 - *Done when:*
   - the synthetic vocal's +30-cent notes are corrected to within ±5 cents under Natural with vibrato kept, and snap with stepped transitions under Hard-tune
   - output length and alignment are sample-exact
   - a blind A/B of both engines, plus Robin's Waves result and Flex Pitch, on one real vocal is logged so he can choose the default engine
+- **Met (tested, both engines):** under Natural the +30-cent notes sit about 3 cents from the scale once the retune has arrived (criterion: 5), in-tune notes move less than a cent, and the vibrato keeps its depth to within 12%. Under Hard-tune each note is on its scale note with under 15% of its movement left, and a 120 ms slide that spent 26% of its time on scale notes spends over 75% there.
+- **Length and alignment, as far as they can be met:** the output has the input's length, rate, channels and start; every sample outside the corrected voiced stretches is identical to the input; corrected notes start within 3 ms of where they did; loudness is within 0.1 LU. The corrected stretches themselves are resynthesized, so they cannot be sample-identical; "sample-exact" holds for the timeline, not for the waveform inside a tuned note.
+- **Not met: the blind A/B on a real vocal.** There is no real vocal, Waves result or Flex Pitch result here. What exists is the tooling: `masterbench vocal benchmark` renders Natural and Hard-tune with both engines, `--add "Waves=file.wav"` brings in outside versions, and the Vocal tab's player runs and logs the blind test (exercised in a headless browser on the synthetic vocal). The engine defaults are provisional until Robin has done this.
+- **What the fixtures cannot show:** a synthetic sawtooth has no consonants, breath, creak, reverb or doubled takes. Pitch tracking, note segmentation and both engines' sound on a human voice are untested. The full-mix path was tested with a perfect stand-in for the separator; real separation will leave bleed that the tuner then makes more audible.
 
 **Phase 9: Vocal mix assistant**
 - The vocal chain and presets, the de-esser, the vocal rider, the dynamic EQ carve, ad-lib handling, sum → master, separate exports, and the feedback loop (5.24).

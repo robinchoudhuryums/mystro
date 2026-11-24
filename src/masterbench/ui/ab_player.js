@@ -362,7 +362,11 @@ class ABPlayer {
 }
 
 const player = new ABPlayer(element.querySelector(".mb-player"));
-window.masterbenchPlayer = player;
+// The Compare tab's player keeps the short name; others are found by their element id.
+const host = element.closest("[id^='mb-']");
+const hostId = host ? host.id : "mb-ab-player";
+window.masterbenchPlayers = Object.assign(window.masterbenchPlayers || {}, { [hostId]: player });
+if (hostId === "mb-ab-player") window.masterbenchPlayer = player;
 const parse = (value) => {
   try {
     return JSON.parse(value || "{}");

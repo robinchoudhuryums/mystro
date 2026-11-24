@@ -1,0 +1,8 @@
+description = "The effect: every frame snapped to the scale at once, slides turned into steps."
+retune_ms = 0
+humanize = 0.0
+amount = 1.0
+preserve_formants = true
+formant_shift = 0.0
+note_hold = false
+engine = "world"

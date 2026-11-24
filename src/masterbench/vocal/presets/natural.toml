@@ -1,0 +1,6 @@
+description = "Moves each note onto the scale and leaves its vibrato, drift and slides alone."
+retune_ms = 100
+humanize = 1.0
+amount = 0.9
+preserve_formants = true
+engine = "rubberband"

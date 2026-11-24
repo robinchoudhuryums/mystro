@@ -194,7 +194,7 @@ claude mcp add masterbench -- uv run --project "$PWD" masterbench mcp
 ```
 
 The tools are `list_tracks`, `list_runs`, `get_analysis`, `compare_runs`, `analyze_file`,
-`suggest_reference`, `get_progress_trends`, `get_habits`, and, with writes on,
+`suggest_reference`, `pitch_report`, `get_progress_trends`, `get_habits`, and, with writes on,
 `master_file` and `run_batch`. Files outside the data folder are refused unless their
 folder is listed in `mcp_allowed_dirs`. For the Claude desktop app, add this under
 `mcpServers` in its config file:
@@ -204,6 +204,37 @@ folder is listed in `mcp_allowed_dirs`. For the Claude desktop app, add this und
   "command": "uv",
   "args": ["run", "--project", "/path/to/mystro", "masterbench", "mcp"]
 }
+```
+
+Check how in tune a vocal is, then tune it to the song's key. Use a dry vocal exported
+from Logic. The report changes nothing; tuning writes a new file beside a copy of the
+vocal, with the same length and start, ready to drag back into the session.
+
+```bash
+uv run masterbench vocal report ~/Music/Bounces/song-lead-vox.wav --track "Song"
+```
+
+```bash
+uv run masterbench vocal tune ~/Music/Bounces/song-lead-vox.wav --track "Song"
+```
+
+`--preset tight` or `--preset hard-tune` change the character (`masterbench vocal presets`
+lists them); `--amount`, `--retune` and `--humanize` adjust it; `--key "F minor"`,
+`--scale dorian` or `--notes "F G# A# C"` set what counts as in tune; `--bypass 3,7` leaves
+notes alone and `--set 5=G#3` sends one somewhere else. The Vocal tab does the same with an
+A/B player and a piano-roll editor.
+
+With only a full mix, the vocal is separated first and put back after tuning. That is
+preview quality, for trying ideas:
+
+```bash
+uv run masterbench vocal tune-mix ~/Music/Bounces/song.wav --genre hip-hop
+```
+
+Compare the two tuning engines, and the same vocal tuned elsewhere, in a blind test:
+
+```bash
+uv run masterbench vocal benchmark ~/Music/Bounces/song-lead-vox.wav --add "Waves=~/Music/Bounces/song-waves.wav"
 ```
 
 See what the codecs and Spotify's normalization do to a master:
@@ -252,7 +283,7 @@ uv run python scripts/verify_stack.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright
 ```
 
-The full suite takes about ten minutes. `pytest -m "not slow"` skips the test that drives the
+The full suite takes about fourteen minutes. `pytest -m "not slow"` skips the test that drives the
 third-party libraries.
 `verify_stack.py` exercises every library on generated audio and downloads one separation
 model (about 65 MB) the first time.
@@ -282,11 +313,13 @@ src/masterbench/
   release/          instrumental and a cappella versions with locked processing
   monitoring.py     calibration noise, listening sessions, break reminders
   mcp_server.py     MCP tools over the engine
+  vocal/            pitch tracking, pitch report, tuning (WORLD or Rubber Band), presets
   ui/               Gradio app, charts, Web Audio A/B/C player
   fixtures.py       synthetic test audio with known ground truth
   migrations/       numbered SQL files, applied in order
 scripts/verify_stack.py   Phase 0 verification spike
 scripts/check_player.js   browser check of the A/B/C player
+scripts/check_vocal.js    browser check of the Vocal tab and pitch editor
 quick_action/             Finder Quick Action script and install steps
 .claude/commands/         cycle workflow slash commands (from claude-workflow-tools)
 tests/                    generated fixtures only; no audio is committed

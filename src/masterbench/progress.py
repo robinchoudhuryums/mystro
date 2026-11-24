@@ -30,6 +30,8 @@ class TrackPoint:
     delta_vs: str | None = None
     hook_contrast_lu: float | None = None
     bass_in_tune_share: float | None = None
+    vocal_in_tune_share: float | None = None
+    vocal_mean_cents: float | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,11 @@ def track_points(conn: sqlite3.Connection) -> list[TrackPoint]:
         flags = conn.execute(
             "SELECT code FROM flags WHERE analysis_id = ? ORDER BY code", (row["analysis_id"],)
         ).fetchall()
+        vocal = conn.execute(
+            "SELECT v.in_tune_share, v.mean_cents FROM vocal_reports v JOIN tracks t"
+            " ON t.id = v.track_id WHERE t.slug = ? ORDER BY v.created_at DESC, v.id LIMIT 1",
+            (row["slug"],),
+        ).fetchone()
         points.append(
             TrackPoint(
                 slug=row["slug"],
@@ -106,6 +113,8 @@ def track_points(conn: sqlite3.Connection) -> list[TrackPoint]:
                 delta_vs=deltas[0]["vs"] if deltas else None,
                 hook_contrast_lu=row["hook_contrast_lu"],
                 bass_in_tune_share=row["bass_in_tune_share"],
+                vocal_in_tune_share=vocal["in_tune_share"] if vocal else None,
+                vocal_mean_cents=vocal["mean_cents"] if vocal else None,
             )
         )
     return points
@@ -139,6 +148,8 @@ def blind_results(conn: sqlite3.Connection) -> list[BlindResult]:
 
 HABIT_WINDOW = 8
 MIN_HABIT_TRACKS = 3
+# A vocal this far off on average, the same way on most tracks, is a singing habit.
+VOCAL_BIAS_CENTS = 8.0
 # Flags that describe one moment or one file's condition, in the words a habit is told in.
 _FLAG_HABITS = {
     "bass_detuned": "808 or bass notes are out of tune",
@@ -225,6 +236,27 @@ def habits(points: list[TrackPoint], limits: Thresholds, window: int = HABIT_WIN
                 considered=len(recent),
                 mean_value=None,
                 confidence=round(wilson_lower(len(hits), len(recent)), 2),
+                examples=[p.title for p in hits[-3:]],
+            )
+        )
+    sung = [p for p in recent if p.vocal_mean_cents is not None]
+    for sign, word in ((1, "sharp"), (-1, "flat")):
+        hits = [p for p in sung if sign * (p.vocal_mean_cents or 0.0) >= VOCAL_BIAS_CENTS]
+        if len(hits) < MIN_HABIT_TRACKS or len(hits) / len(sung) < limits.habit_share:
+            continue
+        mean = sum(p.vocal_mean_cents or 0.0 for p in hits) / len(hits)
+        statement = (
+            f"The vocal is {word} on {len(hits)} of the last {len(sung)} tracks with a pitch "
+            f"report, by {abs(mean):.0f} cents on average."
+        )
+        found.append(
+            Habit(
+                code=f"vocal_{word}",
+                statement=statement,
+                tracks=len(hits),
+                considered=len(sung),
+                mean_value=round(mean, 1),
+                confidence=round(wilson_lower(len(hits), len(sung)), 2),
                 examples=[p.title for p in hits[-3:]],
             )
         )

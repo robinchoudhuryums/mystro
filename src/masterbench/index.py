@@ -250,6 +250,45 @@ def sync_sessions(conn: sqlite3.Connection, paths: Paths) -> int:
         return _sync_sessions(conn, paths)
 
 
+def _sync_vocal_reports(conn: sqlite3.Connection, paths: Paths) -> int:
+    """Pitch reports live beside each vocal; the table mirrors them for the progress view."""
+    conn.execute("DELETE FROM vocal_reports")
+    count = 0
+    for file in sorted(paths.projects.glob("*/vocal/*/pitch.json")):
+        manifest = file.with_name("vocal.json")
+        if not manifest.is_file():
+            continue
+        source = json.loads(manifest.read_text(encoding="utf-8"))
+        found = json.loads(file.read_text(encoding="utf-8"))
+        slug = file.parent.parent.parent.name
+        done = conn.execute(
+            "INSERT INTO vocal_reports (id, track_id, created_at, source_sha256, kind, key,"
+            " notes, in_tune_share, mean_cents, mean_abs_cents)"
+            " SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ? FROM tracks WHERE slug = ?",
+            (
+                f"{slug}/{file.parent.name}",
+                source["created_at"],
+                source["sha256"],
+                source["kind"],
+                found["key"],
+                len(found["notes"]),
+                found["in_tune_share"],
+                found["mean_cents"],
+                found["mean_abs_cents"],
+                slug,
+            ),
+        )
+        count += done.rowcount
+    return count
+
+
+def sync_vocal_reports(conn: sqlite3.Connection, paths: Paths) -> int:
+    with _transaction(conn):
+        for track_file in sorted(paths.projects.glob("*/track.json")):
+            _upsert_track(conn, Track(**json.loads(track_file.read_text(encoding="utf-8"))))
+        return _sync_vocal_reports(conn, paths)
+
+
 def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
     """Rebuild every row from the files on disk: tracks, runs, analyses, references, tests."""
     with _transaction(conn):
@@ -270,6 +309,7 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
         blind_tests = _sync_blind_tests(conn, paths)
         notes = _sync_notes(conn, paths)
         sessions = _sync_sessions(conn, paths)
+        vocals = _sync_vocal_reports(conn, paths)
     tracks = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
     return {
         "tracks": tracks,
@@ -278,6 +318,7 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
         "blind tests": blind_tests,
         "notes": notes,
         "sessions": sessions,
+        "vocal reports": vocals,
     }
 
 

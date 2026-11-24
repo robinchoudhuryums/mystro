@@ -23,7 +23,7 @@ from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 from masterbench.stems.separate import StemSet
 from masterbench.stems.workflow import Diagnosis
-from masterbench.ui import charts, player
+from masterbench.ui import charts, player, vocal_tab
 
 UPLOAD_TYPES = sorted(audio_io.LOSSLESS_EXTENSIONS)
 STEM_MODELS = tuple(stem_separation.MODELS.values())
@@ -421,6 +421,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             )
             st_master = gr.Button("Rebalance and master")
             st_result = gr.Markdown()
+        vocal_tab.build(paths, settings)
         with gr.Tab("Batch"):
             gr.Markdown(
                 "Master a whole EP the same way. Uses the reference, targets and chains chosen "

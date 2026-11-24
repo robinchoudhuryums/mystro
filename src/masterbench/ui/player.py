@@ -192,7 +192,7 @@ def jump_events(run: RunResult) -> list[dict[str, Any]]:
     return sorted(events, key=lambda e: e["start"])[:24]
 
 
-def component(paths: Paths) -> gr.HTML:
+def component(paths: Paths, elem_id: str = "mb-ab-player", value: str | None = None) -> gr.HTML:
     def save_blind_test(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             test = blind.record(
@@ -210,10 +210,10 @@ def component(paths: Paths) -> gr.HTML:
 
     script = resources.files("masterbench.ui").joinpath("ab_player.js").read_text(encoding="utf-8")
     return gr.HTML(
-        value=config(None),
+        value=value or config(None),
         html_template=TEMPLATE,
         css_template=CSS,
         js_on_load=script,
         server_functions=[save_blind_test],
-        elem_id="mb-ab-player",
+        elem_id=elem_id,
     )

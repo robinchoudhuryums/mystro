@@ -12,7 +12,10 @@ from masterbench.master.pipeline import MasterOptions
 from masterbench.preview import streaming
 from masterbench.references import library
 from masterbench.references.library import Reference
-from masterbench.ui import app, player
+from masterbench.ui import app, player, vocal_tab
+from masterbench.vocal import presets as tuning_presets
+from masterbench.vocal import workflow as vocal_workflow
+from masterbench.vocal.tuning import NoteEdit
 
 
 def test_app_builds_with_an_empty_library(paths: Paths, settings: Settings) -> None:
@@ -192,3 +195,45 @@ def test_phase_six_views(paths: Paths, settings: Settings, tmp_path: Path) -> No
     labels = [s["label"] for s in config["sources"]]
     assert labels[:3] == ["Mix", "Master", "Reference"] and "Sim: Phone speaker" in labels
     assert json.loads(player.config(pipeline.analyze(weak, paths, settings)))["sections"]
+
+
+def test_vocal_tab_feeds_the_editor_and_the_player(
+    paths: Paths, settings: Settings, fx: dict[str, Path]
+) -> None:
+    assert vocal_tab.source_choices(paths) == []
+    assert json.loads(vocal_tab.editor_value(None, None)) == {"notes": []}
+    assert json.loads(vocal_tab.player_config(None))["sources"] == []
+
+    source = vocal_workflow.open_vocal(paths, fx["vocal"], track="Night Drive")
+    report = vocal_workflow.report(source, paths)
+    vocal_workflow.write_edits(source, {5: NoteEdit(bypass=True)})
+    editor = json.loads(vocal_tab.editor_value(source, report))
+    assert editor["source"] == source.id and len(editor["notes"]) == 8
+    assert editor["scale"] == [0, 1, 3, 5, 7, 8, 10] and editor["step_s"] == 0.01
+    assert editor["notes"][2] == {
+        "index": 2,
+        "start_s": report.notes[2].start_s,
+        "end_s": report.notes[2].end_s,
+        "center": report.notes[2].center,
+        "target": 60.0,
+        "name": "C4",
+        "cents": report.notes[2].cents,
+    }
+    assert editor["edits"] == {"5": {"bypass": True, "target": None}}
+    assert len(editor["curve"]) * editor["step_s"] == pytest.approx(editor["duration_s"], abs=0.02)
+    assert "from the sung notes" in vocal_tab.key_note(report)
+
+    only = json.loads(vocal_tab.player_config(source))
+    assert [s["label"] for s in only["sources"]] == ["Original"] and only["selected"] == "original"
+    wanted = tuning_presets.get(paths, "natural").settings("F minor", engine="world")
+    version = vocal_workflow.tune(source, wanted, label="Natural")
+    both = json.loads(vocal_tab.player_config(source))
+    assert both["track"] == "night-drive" and both["selected"] == f"tuned_{version.id}"
+    assert [s["label"] for s in both["sources"]] == ["Original", "Natural (world, 90%, 1 edit)"]
+    for listed in both["sources"]:
+        assert Path(listed["url"].removeprefix("/gradio_api/file=")).is_file()
+        assert listed["lufs"] == pytest.approx(-17.1, abs=0.2)
+    assert [e["label"] for e in both["events"]] == ["note 3 (+30 c)", "note 6 (+30 c)"]
+    assert json.loads(vocal_tab.player_config(source, "original"))["selected"] == "original"
+    assert vocal_tab.source_choices(paths) == [("Night Drive: vocal", source.id)]
+    assert app.build(paths, settings).blocks

@@ -99,11 +99,8 @@ def _store_input(project_dir: Path, source: Path, sha256: str) -> Path:
     return dest
 
 
-def open_project(
-    paths: Paths, source: Path, title: str | None = None, genre: str | None = None
-) -> Project:
-    """Find or create the project for a bounce and store the bounce in it."""
-    title = title or title_from_filename(source)
+def ensure_track(paths: Paths, title: str, genre: str | None = None) -> tuple[Track, Path]:
+    """Find or create a track's project folder by title."""
     project_dir = paths.projects / slugify(title)
     track_file = project_dir / "track.json"
     if track_file.exists():
@@ -114,6 +111,14 @@ def open_project(
         track = Track(slugify(title), title, genre, now_iso())
     project_dir.mkdir(parents=True, exist_ok=True)
     write_json(track_file, asdict(track))
+    return track, project_dir
+
+
+def open_project(
+    paths: Paths, source: Path, title: str | None = None, genre: str | None = None
+) -> Project:
+    """Find or create the project for a bounce and store the bounce in it."""
+    track, project_dir = ensure_track(paths, title or title_from_filename(source), genre)
     sha256 = audio_io.file_sha256(source)
     return Project(track, project_dir, _store_input(project_dir, source, sha256), sha256)
 

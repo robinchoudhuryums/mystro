@@ -23,6 +23,7 @@ from masterbench.master import pipeline
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
 from masterbench.references import library, suggest
+from masterbench.vocal import pitch_report as vocal_report
 
 INSTRUCTIONS = (
     "MasterBench masters and analyzes the user's own music on their machine. Runs are "
@@ -264,6 +265,52 @@ def build_server(paths: Paths, settings: Settings) -> MCPServer:
         reports = pipeline.measure(source, paths, settings, genre)
         analyses = {role: summarize(r, True) for role, r in sorted(reports.items())}
         return {"saved": False, "analyses": analyses}
+
+    @server.tool()
+    @explained
+    def pitch_report(path: str, key: str | None = None, scale: str | None = None) -> dict[str, Any]:
+        """How in tune a solo vocal is against a scale: time within ±20 cents, the average
+        distance, the notes furthest out and the worst phrases. Give the song's key (e.g.
+        'F minor') when known; otherwise it is guessed from the sung notes. Read-only."""
+        source = readable(path)
+        audio, info = audio_io.load(source)
+        found = vocal_report.analyze(audio, info.sample_rate, key, scale)
+        furthest = sorted(found.notes, key=lambda note: -abs(note.cents))[:12]
+        return {
+            "file": str(source),
+            "key": found.key,
+            "key_source": found.key_source,
+            "key_confidence": found.key_confidence,
+            "scale": found.scale,
+            "notes": len(found.notes),
+            "in_tune_share": found.in_tune_share,
+            "mean_cents": found.mean_cents,
+            "mean_abs_cents": found.mean_abs_cents,
+            "out_of_key_notes": len(found.out_of_key),
+            "furthest_notes": [
+                {
+                    "number": note.index + 1,
+                    "at_s": note.start_s,
+                    "sung": note.name,
+                    "target": note.target_name,
+                    "cents": note.cents,
+                }
+                for note in furthest
+                if abs(note.cents) >= 10
+            ],
+            "worst_phrases": [
+                {
+                    "from_s": phrase.start_s,
+                    "to_s": phrase.end_s,
+                    "notes": phrase.notes,
+                    "mean_abs_cents": phrase.mean_abs_cents,
+                }
+                for phrase in found.worst_phrases
+            ],
+            "flags": [
+                {"code": f.code, "severity": f.severity, "message": f.message} for f in found.flags
+            ],
+        }
 
     @server.tool()
     @explained

@@ -29,6 +29,7 @@ TOOLS = {
     "get_habits",
     "master_file",
     "run_batch",
+    "pitch_report",
 }
 THIN = ChainPreset("thin", "", (Module("low_shelf", {"freq_hz": 70.0, "gain_db": -8.0}),))
 
@@ -265,3 +266,31 @@ def test_the_real_server_over_stdio(
     assert habits == {"tracks_considered": 1, "habits": []}
     assert diff is not None and diff["b_minus_a"]["lufs_i"] == 0.0
     assert diff["flags"]["in_both"] == ["bass_detuned"]
+
+
+def test_pitch_report_tool(paths: Paths, settings: Settings, fx: dict[str, Path]) -> None:
+    vocal = paths.root / "Inbox" / "Lead Vox.wav"
+    vocal.write_bytes(fx["vocal"].read_bytes())
+    found = ok(paths, settings, "pitch_report", {"path": str(vocal)})
+    assert (found["key"], found["key_source"], found["notes"]) == ("F minor", "detected", 8)
+    assert found["in_tune_share"] == pytest.approx(0.75, abs=0.01)
+    assert [(n["number"], n["sung"], round(n["cents"])) for n in found["furthest_notes"]] == [
+        (3, "C4", 30),
+        (6, "G3", 30),
+    ]
+    assert found["flags"] == [] and len(json.dumps(found)) < 1500
+    assert not list(paths.projects.glob("*/vocal")), "the tool stores nothing"
+
+    given = ok(
+        paths,
+        settings,
+        "pitch_report",
+        {"path": str(vocal), "key": "F minor", "scale": "chromatic"},
+    )
+    assert given["key_source"] == "given" and given["scale"] == "chromatic"
+    assert "outside the folders" in error(
+        paths, settings, "pitch_report", {"path": str(fx["vocal"])}
+    )
+    assert "not a note name" in error(
+        paths, settings, "pitch_report", {"path": str(vocal), "key": "H minor"}
+    )

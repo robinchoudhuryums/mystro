@@ -135,6 +135,10 @@ class Paths:
         return self.root / "presets" / "chains"
 
     @property
+    def tuning_presets(self) -> Path:
+        return self.root / "presets" / "tuning"
+
+    @property
     def projects(self) -> Path:
         return self.root / "projects"
 

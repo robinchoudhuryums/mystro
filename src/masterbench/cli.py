@@ -33,6 +33,11 @@ from masterbench.references import library, suggest, target_curve
 from masterbench.release import versions as alternate_versions
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
+from masterbench.vocal import engines as vocal_engines
+from masterbench.vocal import presets as tuning_presets
+from masterbench.vocal import scales as vocal_scales
+from masterbench.vocal import tuning as vocal_tuning
+from masterbench.vocal import workflow as vocal_workflow
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="MasterBench")
 ref_app = typer.Typer(no_args_is_help=True, help="Manage the genre reference library.")
@@ -43,6 +48,8 @@ curve_app = typer.Typer(no_args_is_help=True, help="Genre target curves built fr
 app.add_typer(preset_app, name="preset")
 app.add_typer(stems_app, name="stems")
 app.add_typer(curve_app, name="curve")
+vocal_app = typer.Typer(no_args_is_help=True, help="Pitch report and tuning for a solo vocal.")
+app.add_typer(vocal_app, name="vocal")
 
 AudioFile = Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]
 ENGINE_ERRORS = (
@@ -55,6 +62,10 @@ ENGINE_ERRORS = (
     mix_notes.NotesError,
     track_tools.TrackError,
     alternate_versions.VersionError,
+    vocal_workflow.VocalError,
+    vocal_tuning.TuningError,
+    vocal_scales.ScaleError,
+    vocal_engines.EngineError,
     LookupError,
 )
 
@@ -831,6 +842,213 @@ def mcp() -> None:
     from masterbench import mcp_server
 
     mcp_server.serve(config.get_paths(), config.load_settings())
+
+
+VocalArg = Annotated[
+    str,
+    typer.Argument(help="A dry vocal file, or a track slug to use that track's vocal stem."),
+]
+KeyOption = Annotated[
+    str | None, typer.Option("--key", help="E.g. 'F minor'. Default: the track's key.")
+]
+ScaleOption = Annotated[
+    str | None,
+    typer.Option(
+        "--scale", help="Scale on the key's tonic: dorian, minor pentatonic, chromatic..."
+    ),
+]
+NotesOption = Annotated[
+    str | None, typer.Option("--notes", help="A custom scale, e.g. 'F G# A# C D#'.")
+]
+
+
+def _vocal_source(paths, source: str, track: str | None) -> vocal_workflow.VocalSource:
+    file = Path(source).expanduser()
+    if file.is_file():
+        return vocal_workflow.open_vocal(paths, file, track)
+    if (paths.projects / source / "track.json").is_file():
+        return vocal_workflow.from_stems(paths, source)
+    raise vocal_workflow.VocalError(f"'{source}' is neither an audio file nor a track")
+
+
+def _custom(notes: str | None) -> tuple[str, ...]:
+    return tuple(notes.replace(",", " ").split()) if notes else ()
+
+
+def _vocal_key(source: vocal_workflow.VocalSource, paths, key: str | None) -> str:
+    """The key to tune in: given, else the stored report's, else a fresh report's."""
+    if key:
+        return key
+    found = vocal_workflow.stored_report(source) or vocal_workflow.report(source, paths)
+    return found.key
+
+
+def _parse_edits(bypass: str | None, targets: list[str]) -> vocal_tuning.Edits:
+    edits: vocal_tuning.Edits = {}
+    try:
+        for number in (bypass or "").replace(",", " ").split():
+            edits[int(number) - 1] = vocal_tuning.NoteEdit(bypass=True)
+        for pair in targets:
+            number, _, note = pair.partition("=")
+            edits[int(number) - 1] = vocal_tuning.NoteEdit(target=vocal_scales.parse_note(note))
+    except ValueError as exc:
+        raise typer.BadParameter(f"edits look like --bypass 3,7 and --set 5=G#3 ({exc})") from exc
+    return edits
+
+
+@vocal_app.command("report")
+def vocal_report(
+    source: VocalArg,
+    track: Annotated[str | None, typer.Option(help="Track this vocal belongs to.")] = None,
+    key: KeyOption = None,
+    scale: ScaleOption = None,
+    notes: NotesOption = None,
+) -> None:
+    """How in tune a vocal is, note by note. Reads only; nothing is changed."""
+    paths = config.get_paths()
+    try:
+        found = _vocal_source(paths, source, track)
+        report = vocal_workflow.report(found, paths, key, scale, _custom(notes))
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"{found.label} [{found.id}]")
+    typer.echo(summary.pitch_text(report))
+
+
+@vocal_app.command("tune")
+def vocal_tune(
+    source: VocalArg,
+    preset: Annotated[str, typer.Option(help="natural, tight, hard-tune or one of yours.")] = (
+        tuning_presets.DEFAULT
+    ),
+    track: Annotated[str | None, typer.Option(help="Track this vocal belongs to.")] = None,
+    key: KeyOption = None,
+    scale: ScaleOption = None,
+    notes: NotesOption = None,
+    amount: Annotated[
+        float | None, typer.Option(min=0, max=100, help="How much to correct, 0 to 100.")
+    ] = None,
+    retune: Annotated[
+        float | None, typer.Option(min=0, max=1000, help="Retune speed in ms; 0 is instant.")
+    ] = None,
+    humanize: Annotated[
+        float | None, typer.Option(min=0, max=100, help="100 keeps vibrato; 0 flattens.")
+    ] = None,
+    engine: Annotated[str | None, typer.Option(help="rubberband or world.")] = None,
+    formant_shift: Annotated[
+        float | None, typer.Option(help="Move the formants, in semitones (WORLD only).")
+    ] = None,
+    note_hold: Annotated[
+        bool | None, typer.Option("--note-hold/--no-note-hold", help="One step per slide.")
+    ] = None,
+    bypass: Annotated[str | None, typer.Option(help="Notes to leave alone, by number: 3,7")] = None,
+    set_target: Annotated[
+        list[str] | None, typer.Option("--set", help="Send a note somewhere else: 5=G#3")
+    ] = None,
+    clear_edits: Annotated[bool, typer.Option(help="Forget stored bypasses and targets.")] = False,
+    save_preset: Annotated[
+        str | None, typer.Option(help="Also save these settings as a preset of this name.")
+    ] = None,
+) -> None:
+    """Tune a vocal to its key. Writes tuned_<settings>.wav; the original is untouched."""
+    paths = config.get_paths()
+    try:
+        found = _vocal_source(paths, source, track)
+        chosen = tuning_presets.get(paths, preset)
+        settings = chosen.settings(
+            _vocal_key(found, paths, key),
+            scale,
+            _custom(notes),
+            amount=None if amount is None else amount / 100,
+            retune_ms=retune,
+            humanize=None if humanize is None else humanize / 100,
+            engine=engine,
+            formant_shift=formant_shift,
+            note_hold=note_hold,
+        )
+        stored = {} if clear_edits else vocal_workflow.read_edits(found)
+        edits = vocal_workflow.write_edits(
+            found, {**stored, **_parse_edits(bypass, set_target or [])}
+        )
+        if save_preset:
+            saved = tuning_presets.from_settings(save_preset, settings, f"Saved from {preset}.")
+            typer.echo(f"saved preset: {tuning_presets.save(paths, saved)}")
+        version = vocal_workflow.tune(found, settings, edits, label=preset.capitalize())
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.tuned_text(version, found.folder))
+
+
+@vocal_app.command("tune-mix")
+def vocal_tune_mix(
+    mix: AudioFile,
+    preset: Annotated[str, typer.Option(help="natural, tight, hard-tune or one of yours.")] = (
+        tuning_presets.DEFAULT
+    ),
+    key: KeyOption = None,
+    scale: ScaleOption = None,
+    title: Annotated[str | None, typer.Option(help="Track title.")] = None,
+    genre: Annotated[str | None, typer.Option(help="Genre of the track.")] = None,
+    model: Annotated[str, typer.Option(help="Separation model.")] = stem_separation.DEFAULT_MODEL,
+) -> None:
+    """Tune the vocal inside a full mix: separate it, tune it, put it back. Preview quality."""
+    paths, app_settings = config.get_paths(), config.load_settings()
+    try:
+        if key is None:
+            analyzed = pipeline.analyze(mix, paths, app_settings, genre, title)
+            musical = analyzed.reports["mix"].musical
+            if musical is None:
+                raise vocal_workflow.VocalError("no key could be detected; pass --key")
+            key = musical.key
+        settings = tuning_presets.get(paths, preset).settings(key, scale)
+        found, version = vocal_workflow.tune_mix(paths, mix, settings, title, genre, model)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.tuned_text(version, found.folder))
+
+
+@vocal_app.command("benchmark")
+def vocal_benchmark(
+    source: VocalArg,
+    track: Annotated[str | None, typer.Option(help="Track this vocal belongs to.")] = None,
+    key: KeyOption = None,
+    scale: ScaleOption = None,
+    add: Annotated[
+        list[str] | None,
+        typer.Option(help="The same vocal tuned elsewhere, as Label=file: 'Waves=waves.wav'"),
+    ] = None,
+) -> None:
+    """Tune one vocal with both engines, measure them, and line them up for a blind test."""
+    paths = config.get_paths()
+    try:
+        found = _vocal_source(paths, source, track)
+        for pair in add or []:
+            label, _, file = pair.partition("=")
+            if not file:
+                raise typer.BadParameter("--add takes Label=file, e.g. 'Waves=waves.wav'")
+            vocal_workflow.add_external(found, Path(file).expanduser(), label)
+        rows = vocal_workflow.benchmark(found, paths, _vocal_key(found, paths, key), scale)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.benchmark_text(rows))
+    typer.echo("")
+    listed = [c["label"] for c in vocal_workflow.candidates(found)]
+    typer.echo(f"Ready to compare in the Vocal tab [{found.id}]: {', '.join(listed)}")
+
+
+@vocal_app.command("presets")
+def vocal_presets() -> None:
+    """List the tuning presets."""
+    paths = config.get_paths()
+    for name in tuning_presets.names(paths):
+        preset = tuning_presets.get(paths, name)
+        values = preset.settings("C major")
+        typer.echo(
+            f"{name:<12} retune {values.retune_ms:g} ms, humanize {values.humanize:.0%}, "
+            f"amount {values.amount:.0%}, {values.engine}"
+        )
+        if preset.description:
+            typer.echo(f"             {preset.description}")
 
 
 if __name__ == "__main__":

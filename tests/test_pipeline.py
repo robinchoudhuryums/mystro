@@ -212,6 +212,7 @@ def test_deleting_the_database_and_reindexing_restores_it(
         "blind tests": 0,
         "notes": 0,
         "sessions": 0,
+        "vocal reports": 0,
     }
     assert dump(paths) == before
 
@@ -235,6 +236,7 @@ def test_reindex_drops_tracks_whose_folder_is_gone(
             "blind tests": 0,
             "notes": 0,
             "sessions": 0,
+            "vocal reports": 0,
         }
         assert [r["slug"] for r in conn.execute("SELECT slug FROM tracks")] == ["loop"]
 

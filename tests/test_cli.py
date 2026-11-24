@@ -62,7 +62,7 @@ def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
     reindexed = runner.invoke(app, ["reindex"])
     assert (
         reindexed.stdout.strip()
-        == "2 tracks, 3 runs, 1 references, 0 blind tests, 0 notes, 0 sessions"
+        == "2 tracks, 3 runs, 1 references, 0 blind tests, 0 notes, 0 sessions, 0 vocal reports"
     )
 
     run_id = min(p.parent.name for p in data_root.glob("projects/loop/runs/*/master_24.wav"))
@@ -307,3 +307,53 @@ def test_phase_seven_commands(data_root: Path, tmp_path: Path, fx: dict[str, Pat
         "78 dB SPL" in tone.stdout
         and (data_root / "calibration" / "pink_noise_-20dBFS.wav").is_file()
     )
+
+
+def test_vocal_commands(data_root: Path, tmp_path: Path, fx: dict[str, Path]) -> None:
+    vocal = tmp_path / "Lead Vox.wav"
+    shutil.copy(fx["vocal"], vocal)
+    listed = runner.invoke(app, ["vocal", "presets"])
+    assert "natural      retune 100 ms, humanize 100%, amount 90%" in listed.stdout
+    assert "hard-tune    retune 0 ms, humanize 0%, amount 100%, world" in listed.stdout
+
+    report = runner.invoke(app, ["vocal", "report", str(vocal), "--track", "Night Drive"])
+    assert report.exit_code == 0, report.output
+    assert "Scale: F minor (guessed from the sung notes, confidence" in report.stdout
+    assert "8 notes in F minor, 75% of the time within ±20 cents" in report.stdout
+    assert "3  0:02.1  0:02.9  C4    C4      +30    <" in report.stdout
+    assert "1  0:00.2  0:01.0  F3    F3      +0" in report.stdout
+    penta = runner.invoke(app, ["vocal", "report", str(vocal), "--scale", "minor pentatonic"])
+    assert "out of key" in penta.stdout and "Phrases furthest out:" in penta.stdout
+
+    options = ["--track", "Night Drive", "--engine", "world"]
+    tuned = runner.invoke(app, ["vocal", "tune", str(vocal), *options, "--bypass", "6"])
+    assert tuned.exit_code == 0, tuned.output
+    assert "Tuned 1 of 8 notes with world; the largest move was 2" in tuned.stdout
+    assert "Retune 100 ms, humanize 100%, amount 90%, scale F minor." in tuned.stdout
+    assert "Within ±20 cents: 75% before, 88% after." in tuned.stdout
+    (file,) = data_root.glob("projects/night-drive/vocal/*/tuned_*.wav")
+    assert f"File: {file}" in tuned.stdout
+    again = runner.invoke(app, ["vocal", "tune", str(vocal), *options])
+    assert "(already made with these settings)" in again.stdout, "the bypass was remembered"
+
+    hard = runner.invoke(
+        app,
+        ["vocal", "tune", str(vocal), *options, "--preset", "hard-tune", "--clear-edits",
+         "--amount", "80", "--save-preset", "mine"],
+    )  # fmt: skip
+    assert hard.exit_code == 0, hard.output
+    assert "Tuned 8 of 8 notes" in hard.stdout and "amount 80%" in hard.stdout
+    assert (data_root / "presets" / "tuning" / "mine.toml").is_file()
+    assert "mine " in runner.invoke(app, ["vocal", "presets"]).stdout
+
+    for arguments, message in (
+        (["vocal", "report", "nope"], "'nope' is neither an audio file nor a track"),
+        (["vocal", "tune", str(vocal), "--key", "H minor"], "not a note name"),
+        (["vocal", "tune", str(vocal), "--preset", "gone"], "no tuning preset named 'gone'"),
+        (["vocal", "tune", str(vocal), *options, "--bypass", "40"], "no note number 40"),
+        (["vocal", "report", "night-drive"], "has no stems yet"),
+    ):
+        failed = runner.invoke(app, arguments)
+        assert failed.exit_code == 1 and message in failed.output, failed.output
+    assert runner.invoke(app, ["vocal", "tune", str(vocal), "--set", "x=1"]).exit_code == 2
+    assert "2 vocal reports" in runner.invoke(app, ["reindex"]).stdout, "one per track"

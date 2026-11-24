@@ -414,6 +414,68 @@ the fresh-ears queue. Migration 004 adds hook contrast and in-tune share to the 
 - The Settings tab shows settings; it does not edit them. `settings.toml` is edited by hand.
 - `launchd/` (LaunchAgent for the watch folder) is still not written.
 
+## Phase 8: vocal tuning (2026-11-24)
+
+### What was built
+
+`vocal/`: scales, pitch tracking and note segmentation, the pitch report, the correction
+plan, two rendering engines, presets, and the on-disk workflow with the full-mix path and
+an engine benchmark. New commands: `vocal report|tune|tune-mix|benchmark|presets`. A Vocal
+tab with a simple view and, under Advanced, every control, a pitch editor and the engine
+comparison. MCP gained `pitch_report`. Migration 005 indexes pitch reports.
+364 tests, about 14 minutes. `scripts/check_vocal.js` drives the tab in a browser (15 checks).
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| Rubber Band's command line applies a pitch map early: a change set for sample N is heard about 3,860 samples before it (44.1 kHz; 3,830 at 48 kHz; about 7,980 at 96 kHz). Uncorrected, a map meant to cancel vibrato doubles it. | The offset is measured on a test tone the first time the engine runs and the map is delayed by it. With that, Rubber Band follows frame-level targets too. |
+| pyrubberband writes its temporary files as 16-bit. | The engine calls `rubberband` itself with 32-bit float files. pyrubberband is still a dependency for `verify_stack.py` only. |
+| WORLD's output was about 1 dB louder than its input on the fixture. | Every replaced stretch is scaled back to the original's level (within a factor of two). |
+| Neither engine returns the input when asked to change nothing: a phase vocoder and a vocoder both rebuild the waveform. | Only voiced stretches with a correction are replaced; consonants, breaths, silence and bypassed phrases are the original samples. |
+| The median of a note with vibrato jumps by several cents with a few frames more on one side, because a sine spends its time at its extremes. A running mean or median leaked up to 10 cents of a 20-cent vibrato into the "sustained" pitch near the ends of a note. | The sustained pitch is the midpoint of the 10th and 90th percentile over 0.35 s (worst error about 2 cents), and a note's centre is its average. |
+| With the plan's 70 to 85% for Natural, a 30-cent error ends 4.5 to 9 cents out; the criterion is 5. | Natural is 90%. |
+| One frame an octave out (a tracker slip) split a note in two and was then "corrected" by a semitone. | Pitch is median-filtered over 5 frames before segmentation, and frames more than 0.7 semitones from their note's sustained pitch are not chased. |
+| Rubber Band keeps formants in pitch-map mode only with the R3 engine (`--fine`); R2 with `--formant` moved them. | The engine always runs R3. Four semitones up, the fixture's 2.6 kHz formant stays put with both engines (tested), and travels when preservation is switched off. |
+| Harvest calls a note voiced for 30 to 40 ms after the fixture's notes end. | Harmless, but tests take the voiced stretches from the tracker, not from the fixture's note times. |
+
+### Measurements (fixtures, 4 Linux CPU cores)
+
+| Check | WORLD | Rubber Band R3 |
+|---|---|---|
+| Natural: +30-cent notes, after the retune has arrived | 2.5 to 2.8 cents | 2.5 to 2.7 cents |
+| Natural: vibrato depth kept | 100% | 100% |
+| Hard-tune: movement left inside notes | 4% | 9% |
+| Hard-tune: share of a slide spent on scale notes (26% before) | 90% | 81% |
+| Change in long-term spectrum, 200 Hz to 8 kHz | 1.1 to 1.3 dB | 0.2 to 0.4 dB |
+| Formant at 2.6 kHz after a 4-semitone shift, level against the band a third above (7.3 dB before) | 8.5 dB | 6.1 dB |
+| Speed on an 8 s vocal, tracking included | 2.7 times real time | 4 to 5 times real time |
+
+Note centres on the fixture are read to within a cent of what was synthesized. Pitch
+tracking alone takes about a seventh of the audio's length.
+
+### Known gaps
+
+- **No real voice has been through any of this.** See the Phase 8 block in `HANDOFF.md`.
+- **The engine defaults are a guess.** The numbers above favour neither for Natural; the
+  blind test decides.
+- Out-of-key notes are moved onto the scale like any other note (up to a semitone). The
+  report flags them; a deliberate blue note has to be bypassed or the chromatic scale used.
+- The correction is planned once, from the tracked pitch. Where tracking is wrong (noise,
+  two voices, heavy reverb) the correction is wrong, and nothing checks the result against
+  the plan beyond the before-and-after report.
+- Rap and speech have pitch but no notes to speak of; the report will say few notes were
+  found, and tuning does little.
+- Notes cannot be split, merged or moved in time in the editor, and the editor has no
+  playback of its own (the player above it has jump buttons for notes 20 cents or more out).
+- Formant shift is WORLD only. Without "keep the formants", WORLD moves the envelope with
+  the pitch; Rubber Band simply drops its `--formant` flag.
+- Tuned versions are not runs: no manifest of library versions, not in the Compare tab.
+- A vocal's pitch report reaches the Progress tab only if its track also has an analyzed mix.
+- The Vocal tab's "vocal already here" list is filled when the page loads and after each
+  check; a vocal added from the command line shows after a reload.
+- `launchd/` is still not written.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -447,6 +509,16 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
    is poor, export the stems with the mix-bus processing off or printed.
 6f. **Calibration and breaks:** `masterbench calibrate` with a phone SPL meter, and whether
    the break notification appears after 50 minutes with the UI open.
+6g. **Phase 8, the blind test that picks the engine.** Export one dry lead vocal from
+   Logic, the same vocal through Waves Tune and through Flex Pitch (same region, same
+   sample rate), then:
+   `masterbench vocal benchmark vocal.wav --track "Song" --add "Waves=waves.wav" --add "Flex Pitch=flex.wav"`.
+   Open the Vocal tab, choose the vocal under "Or a vocal already here", click Check pitch,
+   then Blind test in the player. The result is logged with the track. Tell the next
+   session which engine won and it becomes the presets' default.
+6h. **Phase 8 on a real vocal, before trusting it:** `masterbench vocal report vocal.wav`
+   and compare the notes it lists with what you hear; check the first and last consonant of
+   a tuned phrase for clicks; try a phrase with breathy or creaky notes.
 7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while

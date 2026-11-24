@@ -14,6 +14,8 @@ from masterbench.master.pipeline import RunResult
 from masterbench.progress import Habit
 from masterbench.release.versions import Versions
 from masterbench.stems.workflow import Diagnosis
+from masterbench.vocal.pitch_report import PitchReport
+from masterbench.vocal.workflow import BenchmarkRow, Tuned
 
 _ROLES = ("mix", "master", "reference")
 _ICONS = {"problem": "✖", "warn": "▲", "info": "•"}
@@ -457,3 +459,114 @@ def release_checklist(
 def checklist_markdown(items: list[tuple[bool | None, str]]) -> str:
     marks = {True: "✔", False: "✖", None: "•"}
     return "\n".join(f"- {marks[passed]} {text}" for passed, text in items)
+
+
+def _moment(seconds: float) -> str:
+    """m:ss.t, fine enough to find a note."""
+    return f"{int(seconds // 60)}:{seconds % 60:04.1f}"
+
+
+def pitch_text(found: PitchReport) -> str:
+    """The pitch report: where each note sits against the scale."""
+    source = {
+        "track": "from the track",
+        "detected": "guessed from the sung notes",
+        "given": "as given",
+    }[found.key_source]
+    if found.key_confidence is not None and found.key_source != "given":
+        source += f", confidence {found.key_confidence:.0%}"
+    lines = [f"Scale: {found.scale} ({source}). Notes: {' '.join(found.scale_notes)}"]
+    lines.append(found.headline()[:1].upper() + found.headline()[1:] + ".")
+    if found.notes:
+        rows = [("#", "From", "To", "Sung", "Target", "Cents", "")]
+        for note in found.notes[:80]:
+            mark = "out of key" if not note.in_key else "<" if abs(note.cents) >= 20 else ""
+            rows.append(
+                (
+                    str(note.index + 1),
+                    _moment(note.start_s),
+                    _moment(note.end_s),
+                    note.name,
+                    note.target_name,
+                    f"{round(note.cents):+d}",
+                    mark,
+                )
+            )
+        widths = [max(len(row[i]) for row in rows) for i in range(7)]
+        lines.append("")
+        lines += [
+            "  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)).rstrip() for row in rows
+        ]
+        if len(found.notes) > 80:
+            lines.append(f"... and {len(found.notes) - 80} more notes")
+    if found.worst_phrases:
+        lines.append("")
+        lines.append("Phrases furthest out:")
+        for phrase in found.worst_phrases:
+            lines.append(
+                f"  {_moment(phrase.start_s)} to {_moment(phrase.end_s)}: "
+                f"{phrase.mean_abs_cents:.0f} "
+                f"cents off on average over {phrase.notes} note{'s' if phrase.notes != 1 else ''}; "
+                f"worst is note {phrase.worst_note + 1} at {phrase.worst_cents:+.0f}"
+            )
+    if found.flags:
+        lines.append("")
+        lines += [flag_line(flag) for flag in found.flags]
+    return "\n".join(lines)
+
+
+def pitch_markdown(found: PitchReport) -> str:
+    return "```\n" + pitch_text(found) + "\n```"
+
+
+def _share(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.0%}"
+
+
+def tuned_text(version: Tuned, folder: Path) -> str:
+    """What a tuning pass did, and where the result is."""
+    settings = version.settings
+    again = " (already made with these settings)" if version.cached else ""
+    lines = [
+        f"Tuned {version.corrected} of {version.notes} notes with {settings.engine}{again}; "
+        f"the largest move was {version.largest_cents:.0f} cents.",
+        f"Retune {settings.retune_ms:g} ms, humanize {settings.humanize:.0%}, amount "
+        f"{settings.amount:.0%}, scale {settings.resolve_scale().label}.",
+        f"Within ±20 cents: {_share(version.before['in_tune_share'])} before, "
+        f"{_share(version.after['in_tune_share'])} after. Average distance from the scale: "
+        f"{version.before['mean_abs_cents']} then {version.after['mean_abs_cents']} cents.",
+        f"File: {folder / version.file}",
+        "Same length, sample rate and start as the original, so it drops into the session.",
+    ]
+    if version.preview_file:
+        lines.append(f"Tuned vocal back in the mix: {folder / version.preview_file}")
+    lines += [flag_line(flag) for flag in version.flags]
+    return "\n".join(lines)
+
+
+def benchmark_text(rows: list[BenchmarkRow]) -> str:
+    """Both engines under each preset, by the numbers."""
+    table = [("Preset", "Engine", "Seconds", "x realtime", "In tune", "Off", "Vibrato", "Tone")]
+    for row in rows:
+        table.append(
+            (
+                row.preset,
+                row.engine,
+                f"{row.seconds:.1f}",
+                f"{row.realtime_factor:.1f}",
+                _share(row.in_tune_share),
+                f"{row.mean_abs_cents} c",
+                "n/a" if row.vibrato_kept is None else f"{row.vibrato_kept:.0%}",
+                f"{row.timbre_change_db:.2f} dB",
+            )
+        )
+    widths = [max(len(r[i]) for r in table) for i in range(8)]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(r, widths, strict=True)).rstrip() for r in table]
+    lines += [
+        "",
+        "In tune: time within ±20 cents after tuning. Off: average distance from the scale.",
+        "Vibrato: how much of the original movement inside notes is left (Natural should keep",
+        "it, Hard-tune should not). Tone: change in the long-term spectrum, smaller is closer.",
+        "None of this says which sounds better. Compare them blind in the Vocal tab.",
+    ]
+    return "\n".join(lines)

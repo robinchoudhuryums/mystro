@@ -351,6 +351,45 @@ def synthetic_vocal(
     return _normalize_peak(shaped, peak_dbfs), truth
 
 
+def legato_vocal(
+    sr: int = SR,
+    note_s: float = 0.7,
+    glide_s: float = 0.12,
+    vibrato_cents: float = 20.0,
+    peak_dbfs: float = -6.0,
+) -> tuple[np.ndarray, VocalTruth]:
+    """One sung phrase with slides between its notes: F3, a sharp G#3, C4, A#3.
+
+    The voice never stops, so the notes are joined by 120 ms glides. It is what the
+    hard-tune effect needs to show itself: the glides become steps.
+    """
+    midi, off = (53, 56, 60, 58), {1: 30.0}
+    lead = 0.25
+    notes = [
+        Note(lead + i * (note_s + glide_s), note_s, m, off.get(i, 0.0)) for i, m in enumerate(midi)
+    ]
+    n = int((len(midi) * note_s + (len(midi) - 1) * glide_s) * sr)
+    t = np.arange(n) / sr
+    knots_t = [x for note in notes for x in (note.start_s - lead, note.start_s - lead + note_s)]
+    knots_m = [note.midi + note.cents / 100.0 for note in notes for _ in (0, 1)]
+    pitch = np.interp(t, knots_t, knots_m)
+    pitch += vibrato_cents / 100.0 * np.sin(2 * np.pi * 5.5 * t)
+    freq = 440.0 * 2.0 ** ((pitch - 69.0) / 12.0)
+    phase = 2 * np.pi * np.cumsum(freq) / sr
+    harmonics = range(1, int((sr / 2) // freq.max()) + 1)
+    saw = np.sum([np.sin(k * phase) / k for k in harmonics], axis=0)
+    edge = int(0.03 * sr)
+    saw[:edge] *= np.linspace(0.0, 1.0, edge)
+    saw[-edge:] *= np.linspace(1.0, 0.0, edge)
+    shaped = 0.05 * saw
+    for centre, bandwidth, level in _VOCAL_FORMANTS:
+        band = [centre - bandwidth / 2, centre + bandwidth / 2]
+        shaped += level * _butter(saw, 1, band, "bandpass", sr)
+    quiet = np.zeros(int(lead * sr))
+    out = np.concatenate([quiet, _normalize_peak(shaped, peak_dbfs), quiet])
+    return out, VocalTruth(_LOOP_KEY, 5.5, vibrato_cents, notes, 30.0)
+
+
 def sibilant_vocal(
     sr: int = SR, burst_db: float = 0.0, burst_s: float = 0.12
 ) -> tuple[np.ndarray, list[float]]:
