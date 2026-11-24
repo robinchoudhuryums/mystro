@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from masterbench.analysis.flags import Flag
 from masterbench.master.pipeline import RunResult
+from masterbench.stems.workflow import Diagnosis
 
 _ROLES = ("mix", "master", "reference")
 _ICONS = {"problem": "✖", "warn": "▲", "info": "•"}
@@ -85,3 +86,50 @@ def flags_markdown(result: RunResult) -> str:
     if not result.flags:
         return "No flags."
     return "\n".join(f"- {flag_line(flag)}" for flag in result.flags)
+
+
+_RATIO_NAMES = {
+    "vocal_to_instrumental_db": "Vocal vs beat",
+    "drums_to_total_db": "Drums vs mix",
+    "bass_to_total_db": "Bass vs mix",
+}
+
+
+def stems_text(diagnosis: Diagnosis) -> str:
+    """Stem levels, the headline ratios (with the reference's beside them) and flags."""
+    balance, reference = diagnosis.balance, diagnosis.reference
+    lines = [f"stem set: {diagnosis.stem_set}", "", "Level of each stem relative to the mix:"]
+    lines += [f"  {name:<16} {level:+6.1f} dB" for name, level in balance.levels_db.items()]
+    ratios = balance.ratios()
+    if ratios:
+        lines.append("")
+    for key, value in ratios.items():
+        theirs = reference.ratios().get(key) if reference else None
+        versus = f"   (reference {theirs:+.1f} dB)" if theirs is not None else ""
+        lines.append(f"  {_RATIO_NAMES[key]:<16} {value:+6.1f} dB{versus}")
+    if balance.reconstruction_db is not None:
+        lines += ["", f"Stems sum to within {balance.reconstruction_db:.0f} dB of the mix."]
+    if diagnosis.flags:
+        lines += ["", *[flag_line(flag) for flag in diagnosis.flags]]
+    if diagnosis.warning:
+        lines += ["", diagnosis.warning]
+    return "\n".join(line.rstrip() for line in lines).rstrip()
+
+
+def stems_markdown(diagnosis: Diagnosis) -> str:
+    balance, reference = diagnosis.balance, diagnosis.reference
+    lines = [f"**Stem set `{diagnosis.stem_set}`**", ""]
+    ratios = balance.ratios()
+    if ratios:
+        lines += ["| | This track | Reference |", "|---|---|---|"]
+        for key, value in ratios.items():
+            theirs = reference.ratios().get(key) if reference else None
+            shown = f"{theirs:+.1f} dB" if theirs is not None else ""
+            lines.append(f"| {_RATIO_NAMES[key]} | {value:+.1f} dB | {shown} |")
+        lines.append("")
+    lines += [f"- {flag_line(flag)}" for flag in diagnosis.flags]
+    if balance.reconstruction_db is not None:
+        lines.append(f"- Stems sum to within {balance.reconstruction_db:.0f} dB of the mix.")
+    if diagnosis.warning:
+        lines += ["", f"_{diagnosis.warning}_"]
+    return "\n".join(lines)

@@ -18,6 +18,9 @@ from masterbench.audio_io import AudioInfo
 from masterbench.config import Settings
 
 Role = Literal["mix", "master", "reference", "stem"]
+# Spotify's mastering tips (support.spotify.com, "Loudness normalization", read 2026-11-24).
+SPOTIFY_LUFS = -14.0
+SPOTIFY_LOUD_PEAK_DBTP = -2.0
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,14 @@ def master_flags(loud: Loudness, target_lufs: float | None, ceiling_dbtp: float)
     if target_lufs is not None and abs(loud.lufs_i - target_lufs) > 0.5:
         message = f"Integrated loudness {loud.lufs_i:.1f} LUFS missed the {target_lufs:.1f} target."
         flags.append(Flag("off_target", "warn", message, loud.lufs_i - target_lufs))
+    if loud.lufs_i > SPOTIFY_LUFS + 0.5 and loud.true_peak_dbtp > SPOTIFY_LOUD_PEAK_DBTP:
+        message = (
+            f"At {loud.lufs_i:.1f} LUFS this is louder than Spotify's {SPOTIFY_LUFS:.0f}. "
+            f"Spotify asks for a true peak under {SPOTIFY_LOUD_PEAK_DBTP:.0f} dBTP on louder "
+            f"masters (this one is {loud.true_peak_dbtp:+.1f}), since they distort more when "
+            "encoded, and it will turn the track down anyway."
+        )
+        flags.append(Flag("loud_for_spotify", "warn", message, loud.true_peak_dbtp))
     return flags
 
 

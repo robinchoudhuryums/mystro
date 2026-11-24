@@ -13,6 +13,7 @@ from masterbench import blind, index
 from masterbench.config import Paths
 from masterbench.master.pipeline import RunResult
 from masterbench.preview.streaming import StreamingPreview
+from masterbench.stems.separate import StemSet
 
 # The JSON config travels in the component's value; the script reads it from props.
 TEMPLATE = """
@@ -117,15 +118,32 @@ def other_master(run: RunResult) -> dict[str, Any]:
     }
 
 
+def stem_sources(stem_set: StemSet) -> list[dict[str, Any]]:
+    """Stem solos. Stems silent enough to have no loudness are left out."""
+    kind = "separated" if stem_set.separated else "Logic"
+    return [
+        {
+            "id": f"stem_{name}",
+            "label": f"Stem: {name} ({kind})",
+            "url": file_url(stem_set.path(name)),
+            "lufs": level,
+        }
+        for name, level in (stem_set.lufs or {}).items()
+        if level > -70
+    ]
+
+
 def config(
     run: RunResult | None,
     preview: StreamingPreview | None = None,
     extra: list[RunResult] | None = None,
+    stems: StemSet | None = None,
 ) -> str:
     """JSON for the player component's value."""
     if run is None:
         return json.dumps({"sources": [], "message": "Choose a run to load its audio."})
     listed = sources(run, preview) + [other_master(other) for other in extra or []]
+    listed += stem_sources(stems) if stems else []
     selected = "master" if any(s["id"] == "master" for s in listed) else "mix"
     return json.dumps({"track": run.manifest.track.slug, "selected": selected, "sources": listed})
 

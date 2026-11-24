@@ -6,7 +6,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from masterbench import audio_io, index, progress, summary
+from masterbench import audio_io, index, progress, projects, summary
 from masterbench.analysis.compare import BAND_LABELS
 from masterbench.config import Paths, Settings
 from masterbench.master import chain, pipeline, presets
@@ -15,9 +15,14 @@ from masterbench.master.pipeline import MasterOptions, RunResult
 from masterbench.preview import streaming
 from masterbench.preview.streaming import StreamingPreview
 from masterbench.references import library
+from masterbench.stems import separate as stem_separation
+from masterbench.stems import workflow as stem_workflow
+from masterbench.stems.separate import StemSet
+from masterbench.stems.workflow import Diagnosis
 from masterbench.ui import charts, player
 
 UPLOAD_TYPES = sorted(audio_io.LOSSLESS_EXTENSIONS)
+STEM_MODELS = tuple(stem_separation.MODELS.values())
 REFERENCE_TYPES = sorted(audio_io.AUDIO_EXTENSIONS)
 ENGINE_ERRORS = (
     MasteringError,
@@ -25,6 +30,7 @@ ENGINE_ERRORS = (
     audio_io.AudioError,
     streaming.PreviewError,
     chain.ChainError,
+    stem_separation.StemError,
     LookupError,
 )
 NO_REFERENCES = (
@@ -169,6 +175,14 @@ def progress_view(paths: Paths) -> tuple:
     )
 
 
+def gain_rows(stem_set: StemSet, diagnosis: Diagnosis) -> list[list]:
+    """Rows for the rebalance table: stem, role, level relative to the mix, gain to apply."""
+    return [
+        [name, stem_set.roles[name], diagnosis.balance.levels_db[name], 0.0]
+        for name in stem_set.stems
+    ]
+
+
 def build(paths: Paths, settings: Settings) -> gr.Blocks:
     paths.ensure()
     genres, genre_default = genre_choices(paths, settings)
@@ -217,6 +231,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     scale=2,
                 )
                 cmp_render = gr.Button("Render streaming previews", scale=1)
+            cmp_stems = gr.Checkbox(label="Add stem solos (when this track has stems)")
             ab_player = player.component(paths)
             gr.Markdown(
                 "Loudness matching only changes playback level; exported files are untouched."
@@ -229,6 +244,41 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             loudness_plot = gr.Plot()
             stereo_md = gr.Markdown()
             an_flags = gr.Markdown()
+        with gr.Tab("Stems") as stems_tab:
+            with gr.Row():
+                st_run = gr.Dropdown(label="Run", choices=run_choices(paths), value=None, scale=2)
+                st_model = gr.Dropdown(
+                    label="Separation model",
+                    choices=[(f"{m.key}: {m.description}", m.key) for m in STEM_MODELS],
+                    value=stem_separation.DEFAULT_MODEL,
+                    scale=2,
+                )
+                st_compare = gr.Checkbox(label="Compare with the reference's stems", value=True)
+                st_separate = gr.Button("Separate", variant="primary", scale=1)
+            with gr.Accordion("Import stems exported from Logic", open=False):
+                gr.Markdown(
+                    "Export all tracks as audio files from Logic into one folder, same start "
+                    "and length. Roles are guessed from the file names (vocal, drum, 808, bass)."
+                )
+                with gr.Row():
+                    st_folder = gr.Textbox(label="Folder with the stems", scale=3)
+                    st_title = gr.Textbox(label="Track title", scale=2)
+                    st_genre = gr.Dropdown(
+                        label="Genre", choices=genres, value=genre_default, allow_custom_value=True
+                    )
+                    st_import = gr.Button("Import", scale=1)
+            st_set = gr.Dropdown(label="Stem set", choices=[], value=None)
+            st_report = gr.Markdown()
+            st_gains = gr.Dataframe(
+                headers=["Stem", "Role", "Level vs mix (dB)", "Gain (dB)"],
+                datatype=["str", "str", "number", "number"],
+                type="array",
+                label="Rebalance: edit the Gain column (±6 dB)",
+                static_columns=[0, 1, 2],
+                interactive=True,
+            )
+            st_master = gr.Button("Rebalance and master")
+            st_result = gr.Markdown()
         with gr.Tab("Progress") as progress_tab:
             trend_plot = gr.Plot()
             loudness_trend_plot = gr.Plot()
@@ -384,25 +434,28 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         def load(run_id: str | None) -> RunResult | None:
             return pipeline.load_run(paths, run_id) if run_id else None
 
-        def on_compare_run(run_id: str | None):
+        def compare_config(run_id, extra_ids, with_stems) -> tuple[str, StreamingPreview | None]:
+            result = load(run_id)
+            if result is None:
+                return player.config(None), None
+            preview = streaming.load(result) if result.manifest.outputs else None
+            extras = [pipeline.load_run(paths, i) for i in extra_ids or []]
+            sets = stem_workflow.sets_for_run(result) if with_stems else []
+            return player.config(result, preview, extras, sets[0] if sets else None), preview
+
+        def on_compare_run(run_id: str | None, with_stems: bool):
             result = load(run_id)
             if result is None:
                 return player.config(None), gr.Dropdown(choices=[], value=[]), ""
-            preview = streaming.load(result) if result.manifest.outputs else None
+            config_json, preview = compare_config(run_id, [], with_stems)
             extras = gr.Dropdown(choices=other_masters(paths, result), value=[])
             text = streaming_markdown(preview) if result.manifest.outputs else ""
-            return player.config(result, preview), extras, text
+            return config_json, extras, text
 
-        def on_compare_extra(run_id: str | None, extra_ids: list[str] | None):
-            result = load(run_id)
-            if result is None:
-                return player.config(None)
-            preview = streaming.load(result) if result.manifest.outputs else None
-            return player.config(
-                result, preview, [pipeline.load_run(paths, i) for i in extra_ids or []]
-            )
+        def on_compare_extra(run_id: str | None, extra_ids: list[str] | None, with_stems: bool):
+            return compare_config(run_id, extra_ids, with_stems)[0]
 
-        def on_render(run_id: str | None, extra_ids: list[str] | None):
+        def on_render(run_id: str | None, extra_ids: list[str] | None, with_stems: bool):
             result = load(run_id)
             if result is None:
                 raise gr.Error("Choose a run first.")
@@ -410,8 +463,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 preview = streaming.render(result, settings)
             except ENGINE_ERRORS as exc:
                 raise gr.Error(str(exc)) from exc
-            extras = [pipeline.load_run(paths, i) for i in extra_ids or []]
-            return player.config(result, preview, extras), streaming_markdown(preview)
+            return compare_config(run_id, extra_ids, with_stems)[0], streaming_markdown(preview)
 
         def on_analysis_run(run_id: str | None):
             result = load(run_id)
@@ -455,7 +507,126 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             draft = chain.ChainPreset("draft", current.description, (*current.modules, module))
             return presets.to_toml(draft)
 
+        def stems_view(stem_set, diagnosis):
+            return (
+                summary.stems_markdown(diagnosis),
+                gain_rows(stem_set, diagnosis),
+                "",
+            )
+
+        def set_choices(result: RunResult):
+            return [
+                (f"{s.name} ({'separated' if s.separated else 'from Logic'})", s.name)
+                for s in stem_workflow.sets_for_run(result)
+            ]
+
+        def run_reference(result: RunResult, wanted: bool):
+            genre_name = result.manifest.track.genre
+            if not wanted or not genre_name:
+                return None
+            try:
+                return library.get(paths, genre_name, "default")
+            except library.ReferenceError:
+                return None
+
+        def on_stems_run(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                return gr.Dropdown(choices=[], value=None)
+            choices = set_choices(result)
+            return gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
+
+        def on_separate(run_id, model_key, compare_wanted, progress=gr.Progress()):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                progress(0.1, desc="Separating (the first use of a model downloads it)")
+                project = projects.open_project(paths, result.mix_path, result.manifest.track.title)
+                stem_set = stem_workflow.separate_mix(project, model_key)
+                progress(0.7, desc="Measuring the stem balance")
+                diagnosis = stem_workflow.diagnose(
+                    stem_set, result.mix_path, settings, run_reference(result, compare_wanted)
+                )
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            picker = gr.Dropdown(choices=set_choices(result), value=stem_set.name)
+            return (picker, *stems_view(stem_set, diagnosis))
+
+        def on_stem_set(run_id, set_name, compare_wanted):
+            result = load(run_id)
+            if result is None or not set_name:
+                return (gr.skip(),) * 3
+            try:
+                stem_set = stem_workflow.find_set(paths, result.manifest.track.slug, set_name)
+                diagnosis = stem_workflow.diagnose(
+                    stem_set, result.mix_path, settings, run_reference(result, compare_wanted)
+                )
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return stems_view(stem_set, diagnosis)
+
+        def on_stems_import(folder, title, genre_name):
+            if not folder or not title:
+                raise gr.Error("Enter the folder and a track title.")
+            try:
+                project, stem_set = stem_workflow.import_logic_stems(
+                    paths, Path(folder.strip()).expanduser(), title.strip(), genre_name or None
+                )
+                result = pipeline.analyze(
+                    project.input_path, paths, settings, project.track.genre, project.track.title
+                )
+                diagnosis = stem_workflow.diagnose(stem_set, result.mix_path, settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            except OSError as exc:
+                raise gr.Error(f"Cannot read that folder: {exc}") from exc
+            run_picker = gr.Dropdown(choices=run_choices(paths), value=result.manifest.id)
+            set_picker = gr.Dropdown(choices=set_choices(result), value=stem_set.name)
+            return (run_picker, set_picker, *stems_view(stem_set, diagnosis))
+
+        def on_rebalance(run_id, set_name, rows, spec, lufs, peak, progress=gr.Progress()):
+            result = load(run_id)
+            if result is None or not set_name:
+                raise gr.Error("Choose a run and a stem set first.")
+            if not spec:
+                raise gr.Error("Add a reference in the Library tab first.")
+            gains = {row[0]: float(row[3] or 0) for row in rows if float(row[3] or 0) != 0}
+            track = result.manifest.track
+            options = MasterOptions(spec, lufs, peak, genre=track.genre, title=track.title)
+            try:
+                stem_set = stem_workflow.find_set(paths, track.slug, set_name)
+                rebalanced, mastered = stem_workflow.rebalance_and_master(
+                    paths,
+                    settings,
+                    stem_set,
+                    gains,
+                    options,
+                    progress=lambda stage, fraction: progress(fraction, desc=stage),
+                )
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            notes = [summary.as_markdown(mastered), "", summary.flags_markdown(mastered), ""]
+            if rebalanced.trim_db < 0:
+                trim = -rebalanced.trim_db
+                notes.append(f"The new balance was turned down {trim:.1f} dB to keep headroom.")
+            if stem_set.separated:
+                notes.append("Built from separated stems: listen for artifacts before trusting it.")
+            notes.append("Open the new run in Compare to hear it against the original master.")
+            return "\n".join(notes)
+
         genre.change(on_genre, genre, reference)
+        st_view = [st_report, st_gains, st_result]
+        st_run.change(on_stems_run, st_run, st_set)
+        st_set.change(on_stem_set, [st_run, st_set, st_compare], st_view)
+        st_separate.click(on_separate, [st_run, st_model, st_compare], [st_set, *st_view])
+        st_import.click(
+            on_stems_import, [st_folder, st_title, st_genre], [st_run, st_set, *st_view]
+        )
+        st_master.click(
+            on_rebalance, [st_run, st_set, st_gains, reference, target, ceiling], st_result
+        )
+        stems_tab.select(refresh_runs, st_run, st_run)
         preset_pick.input(on_preset_pick, preset_pick, [preset_text, preset_name])
         preset_save.click(
             on_preset_save,
@@ -468,9 +639,10 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         master_inputs = [mix, previous, genre, reference, target, ceiling, pre_chain, post_chain]
         run.click(on_master, master_inputs, after_run)
         analyze.click(on_analyze, [mix, previous, genre], after_run)
-        cmp_run.change(on_compare_run, cmp_run, [ab_player, cmp_extra, stream_md])
-        cmp_extra.input(on_compare_extra, [cmp_run, cmp_extra], ab_player)
-        cmp_render.click(on_render, [cmp_run, cmp_extra], [ab_player, stream_md])
+        cmp_run.change(on_compare_run, [cmp_run, cmp_stems], [ab_player, cmp_extra, stream_md])
+        cmp_extra.input(on_compare_extra, [cmp_run, cmp_extra, cmp_stems], ab_player)
+        cmp_stems.input(on_compare_extra, [cmp_run, cmp_extra, cmp_stems], ab_player)
+        cmp_render.click(on_render, [cmp_run, cmp_extra, cmp_stems], [ab_player, stream_md])
         an_run.change(
             on_analysis_run, an_run, [spectrum_plot, band_plot, loudness_plot, stereo_md, an_flags]
         )

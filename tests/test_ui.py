@@ -125,3 +125,27 @@ def test_analysis_and_progress_views_build(
 def test_empty_progress_view_explains_itself(paths: Paths) -> None:
     trends, loudness_trends, flag_plot, rows = app.progress_view(paths)
     assert rows == [] and "No tracks" in trends.layout.annotations[0].text
+
+
+def test_stems_reach_the_player_and_the_rebalance_table(
+    paths: Paths, settings: Settings, tmp_path: Path
+) -> None:
+    from masterbench import fixtures
+    from masterbench.stems import workflow
+
+    stems, _ = fixtures.song_stems()
+    for role, audio in stems.items():
+        fixtures.write_wav(tmp_path / "stems" / f"{role}.wav", audio)
+    project, stem_set = workflow.import_logic_stems(paths, tmp_path / "stems", "Song")
+    result = pipeline.analyze(project.input_path, paths, settings, title="Song")
+    diagnosis = workflow.diagnose(stem_set, result.mix_path, settings)
+
+    rows = app.gain_rows(stem_set, diagnosis)
+    assert [row[0] for row in rows] == ["bass", "drums", "other", "vocals"]
+    assert all(row[3] == 0.0 and row[2] < 0 for row in rows)
+    assert "| Vocal vs beat |" in app.summary.stems_markdown(diagnosis)
+
+    config = json.loads(player.config(result, stems=workflow.sets_for_run(result)[0]))
+    labels = [s["label"] for s in config["sources"]]
+    assert labels == ["Mix", *[f"Stem: {n} (Logic)" for n in ("bass", "drums", "other", "vocals")]]
+    assert all(Path(s["url"].split("=", 1)[1]).is_file() for s in config["sources"])

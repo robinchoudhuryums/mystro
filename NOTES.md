@@ -167,9 +167,8 @@ this fixture, and the preview then suggests a -1.5 dBTP ceiling.
 
 ### Known gaps
 
-- **Spotify's rules were not read from the live page.** `support.spotify.com` is blocked in
-  the build sandbox, so the rules come from that article as quoted in search results. Check
-  them against the page before trusting the messages for a release.
+- Spotify's rules were first taken from search-result quotes; they were checked against
+  the live article in Phase 4 and match.
 - The player has only been run headless. Crossfade clicks, the feel of the loop buttons and
   memory use with long tracks need ears and a real browser.
 - Loop points are set at the playhead with two buttons; there is no waveform or drag.
@@ -216,6 +215,54 @@ from the Ubuntu archive), which the Phase 0 spike had to skip.
 - A hosted plugin's reported latency is left to Pedalboard; only length preservation is
   checked. A plugin with lookahead that Pedalboard does not compensate would shift the audio.
 
+## Phase 4: stems (2026-11-24)
+
+### What was built
+
+`masterbench separate`, `stems import|list`, `rebalance`; the Stems tab; stem solos in the
+A/B/C player; iCloud-safe data root (`init --icloud`). 204 tests pass.
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| audio-separator scales any output stem that peaks above its `normalization_threshold` (0.9 by default), each stem on its own. | That silently changes the balance between stems. The wrapper stages the input at a 0.5 peak, sets the threshold to 1.0, and scales the stems back. |
+| It always works and writes at 44.1 kHz, whatever the input. | Stems are resampled and trimmed to the source's rate and length. For a 48 kHz bounce the stems then sum to within about -33 dB of the mix, because content above 22 kHz is gone. |
+| With `use_soundfile=True` the output keeps the input's subtype. | The staged input is float, so stems come back as float and nothing is clipped. |
+| Demucs weights come from `dl.fbaipublicfiles.com`, MDX and Roformer weights from GitHub. | Both hosts must be reachable on first use of a model. |
+| On the fixture song, `demucs-4-fast` measured drums at -7.61 dB and bass at -3.69 dB relative to the mix; the true stems give -7.56 and -3.60. | Drum and bass ratios from separation look trustworthy. |
+| Neither model treats the synthetic sawtooth "vocal" as a voice (Demucs filed it under "other"). | Vocal-to-beat on separated stems cannot be validated with fixtures. Needs a real song. |
+| Separation ran at about real time on 4 CPU cores (14 s of audio in 14 to 16 s). | An M2 with CoreML should be several times faster; unmeasured. |
+
+### Decisions
+
+- **Reference comparison uses separated reference stems**, cached in
+  `references/<genre>/.stems/`. When the mix's stems are real (from Logic) and the
+  reference's are separated, the comparison mixes exact and estimated numbers; the flag
+  threshold is 2 dB to leave room for that.
+- **Rebalance never limits.** Gains are capped at ±6 dB per stem; if the new sum would peak
+  above -1 dBFS the whole mix is turned down and the amount reported.
+- **A rebalanced mix is mastered as a new run of the same track**, so it lines up next to
+  the original master in the Compare tab.
+- **Role guessing** for Logic stems is by file name (vocal/vox/lead/adlib, drum/kick/snare/hat,
+  bass/808/sub, beat/instrumental; everything else is "other") and can be overridden.
+
+### Spotify's article, read directly
+
+`support.spotify.com` is now reachable from the build environment, and the article matches
+what Phase 2 implemented. Two additions came out of it: the `loud_for_spotify` flag (masters
+louder than -14 LUFS should peak under -2 dBTP), and a note that album playback uses one
+gain for the whole album, which the EP mode in Phase 5 should report.
+
+### Known gaps
+
+- Stem diagnostics are stored as `diagnosis.json` beside the stems but are not in the
+  SQLite index yet, so the progress tracker cannot trend them. That belongs with habit
+  detection in Phase 7.
+- `roformer-2` and `demucs-4` were not run (large and slow on CPU).
+- Manifests store absolute paths, so a data root shared between two Macs with different
+  user names would need those rewritten.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -228,13 +275,13 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
    closer to Apple's encoder) is present. The codec check prefers `aac_at` when it exists.
 3. **Source builds:** `pyworld` and `diffq` have no macOS arm64 wheels for Python 3.12, so
    `uv sync` compiles them. That needs the Xcode Command Line Tools.
-4. **Separation speed** with the CoreML provider, and a Roformer model against `htdemucs_ft`.
-   `htdemucs` weights come from a different host than the MDX models.
+4. **Separation on a real song:** time `masterbench separate song.wav` for each model
+   (`mdx-2`, `roformer-2`, `demucs-4-fast`, `demucs-4`), and judge whether the vocal-to-beat
+   figure matches what you hear.
 5. **watchdog** on the FSEvents backend (inotify was used here).
 6. **Notifications** through `osascript` or `terminal-notifier` (only the latter can open
    the run link on click), the Quick Action, and the LaunchAgent.
-7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind
-   mode), and Spotify's normalization article against `preview/streaming.py`.
+7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while
    `masterbench watch` runs.

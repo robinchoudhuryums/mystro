@@ -6,10 +6,11 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phases 0 to 3 are done: mastering against a reference, processing chains with
-hosted VST3/AU plugins, loudness, frequency balance and stereo analysis, streaming
-previews, a level-matched A/B/C player with blind tests, a progress view, the reference
-library and the watch folder. Phase 4 (stems) is next.
+**Status:** Phases 0 to 4 are done: mastering against a reference, processing chains with
+hosted VST3/AU plugins, stems (separated or exported from Logic) with balance checks and
+rebalancing, loudness, frequency balance and stereo analysis, streaming previews, a
+level-matched A/B/C player with blind tests, a progress view, the reference library and
+the watch folder. Phase 5 (batch, AI notes, Quick Action) is next.
 
 ## Setup (macOS)
 
@@ -78,6 +79,23 @@ uv run masterbench preset add-plugin my-chain "/Library/Audio/Plug-Ins/VST3/Some
 `masterbench preset list` shows the presets, `masterbench plugins` the plugins found. Presets
 are TOML files in `~/MasterBench/presets/chains/`.
 
+Separate a mix into stems and see how the vocal, drums and bass sit:
+
+```bash
+uv run masterbench separate ~/Music/Bounces/song.wav --genre hip-hop
+```
+
+Better, when you have them: import stems exported from Logic, then nudge the balance and
+master the result as a new run of the same track.
+
+```bash
+uv run masterbench stems import ~/Music/Bounces/song-stems --title "Song" --genre hip-hop
+```
+
+```bash
+uv run masterbench rebalance song --gain lead-vox=+2 --gain drums=-1
+```
+
 See what the codecs and Spotify's normalization do to a master:
 
 ```bash
@@ -138,6 +156,7 @@ src/masterbench/
   projects.py       projects, runs, manifests
   db.py, index.py   SQLite migrations, indexing, reindex
   watch.py          watch folder
+  stems/            separation, Logic stem import, balance, rebalance
   preview/          codec round trips and platform normalization
   progress.py       per-track trends, recurring flags, blind-test history
   ui/               Gradio app, charts, Web Audio A/B/C player

@@ -129,3 +129,41 @@ def test_init_home_is_remembered_and_a_new_index_fills_itself(
     assert runner.invoke(app, ["init", "--icloud"]).exit_code == 1, (
         "no iCloud Drive in the test home"
     )
+
+
+def test_stems_from_the_command_line(data_root: Path, tmp_path: Path, fx: dict[str, Path]) -> None:
+    from masterbench import fixtures
+
+    stems, _ = fixtures.song_stems()
+    names = {"drums": "Drums", "bass": "808 Bass", "other": "Pads", "vocals": "Lead Vox"}
+    for role, audio in stems.items():
+        fixtures.write_wav(tmp_path / "stems" / f"{names[role]}.wav", audio)
+    runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+
+    imported = runner.invoke(
+        app,
+        [
+            "stems",
+            "import",
+            str(tmp_path / "stems"),
+            "--title",
+            "Night Drive",
+            "--genre",
+            "hip-hop",
+        ],
+    )
+    assert imported.exit_code == 0, imported.output
+    assert (
+        "lead-vox                 vocals" in imported.stdout and "Vocal vs beat" in imported.stdout
+    )
+    listed = runner.invoke(app, ["stems", "list", "night-drive"])
+    assert "from Logic" in listed.stdout and "808-bass" in listed.stdout
+    assert runner.invoke(app, ["stems", "list", "nope"]).stdout.strip() == "no stem sets"
+
+    mastered = runner.invoke(app, ["rebalance", "night-drive", "--gain", "lead-vox=+2"])
+    assert mastered.exit_code == 0, mastered.output
+    assert "Master     -14.0" in mastered.stdout
+    too_much = runner.invoke(app, ["rebalance", "night-drive", "--gain", "drums=-9"])
+    assert too_much.exit_code == 1 and "limited to ±6 dB" in too_much.output
+    assert runner.invoke(app, ["rebalance", "night-drive", "--gain", "drums"]).exit_code == 2
+    assert runner.invoke(app, ["rebalance", "nope", "--gain", "drums=1"]).exit_code == 1

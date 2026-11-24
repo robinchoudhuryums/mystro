@@ -1,9 +1,11 @@
 """Streaming previews: what the codecs and the platforms' loudness normalization do to a master.
 
-Spotify's rules follow its "Loudness normalization" support article: -14 LUFS by default
-(ITU 1770), Loud -11 and Quiet -19 for Premium; louder masters are turned down; quieter ones
-are turned up only as far as -1 dBFS of peak headroom allows, except in Loud mode, where the
-full gain is applied and a limiter catches the peaks.
+Spotify's rules follow its "Loudness normalization" support article (read 2026-11-24):
+-14 LUFS by default, Loud -11 and Quiet -19 for Premium. Louder masters are turned down.
+Quieter ones are turned up only as far as 1 dB of peak headroom allows ("-20 LUFS with a
+-5 dBFS true peak is only lifted to -16"), except in Loud mode, which applies the full gain
+and a limiter (-1 dB, 5 ms attack, 100 ms decay). Albums played in order get one gain for
+the whole album; that is not modelled here. The web player does not normalize at all.
 """
 
 from __future__ import annotations

@@ -55,6 +55,7 @@ class Thresholds:
     phase_correlation: float = -0.2
     low_end_mono_corr: float = 0.9
     codec_peak_dbtp: float = -1.0
+    stem_balance_db: float = 2.0
 
 
 @dataclass(frozen=True)

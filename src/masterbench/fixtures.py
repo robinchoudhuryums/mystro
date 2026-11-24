@@ -175,16 +175,10 @@ DETUNED_BAR = 5
 DETUNED_CENTS = 35.0
 
 
-def drum_808_loop(
-    sr: int = SR,
-    tempo_bpm: float = 140.0,
-    seed: int = 1,
-    peak_dbfs: float = -6.0,
-    hat_gain: float = 0.12,
-    bass_gain: float = 0.8,
-    detune: bool = True,
-) -> tuple[np.ndarray, LoopTruth]:
-    """8-bar hip-hop style loop in F minor: kick, snare, hats, 808, pad."""
+def _loop_parts(
+    sr: int, tempo_bpm: float, seed: int, hat_gain: float, bass_gain: float, detune: bool
+) -> tuple[dict[str, np.ndarray], LoopTruth]:
+    """The loop's drums, bass and pad as separate stereo stems, before any normalization."""
     rng = np.random.default_rng(seed)
     bars = len(_LOOP_808_MIDI)
     beat = 60.0 / tempo_bpm
@@ -217,10 +211,50 @@ def drum_808_loop(
         _place(pad_l, start, 0.22 * _pad(chord, 8 * beat, sr, -4.0), sr)
         _place(pad_r, start, 0.22 * _pad(chord, 8 * beat, sr, 4.0), sr)
 
-    centre = drums + bass
-    audio = np.column_stack([centre + pad_l + hats_l, centre + pad_r + hats_r])
     truth = LoopTruth(_LOOP_KEY, tempo_bpm, bars, notes, kick_times, snare_times)
-    return _normalize_peak(audio, peak_dbfs), truth
+    parts = {
+        "drums": np.column_stack([drums + hats_l, drums + hats_r]),
+        "bass": _stereo(bass),
+        "other": np.column_stack([pad_l, pad_r]),
+    }
+    return parts, truth
+
+
+def drum_808_loop(
+    sr: int = SR,
+    tempo_bpm: float = 140.0,
+    seed: int = 1,
+    peak_dbfs: float = -6.0,
+    hat_gain: float = 0.12,
+    bass_gain: float = 0.8,
+    detune: bool = True,
+) -> tuple[np.ndarray, LoopTruth]:
+    """8-bar hip-hop style loop in F minor: kick, snare, hats, 808, pad."""
+    parts, truth = _loop_parts(sr, tempo_bpm, seed, hat_gain, bass_gain, detune)
+    return _normalize_peak(np.sum(list(parts.values()), axis=0), peak_dbfs), truth
+
+
+def song_stems(
+    sr: int = SR, vocal_db: float = -6.0, peak_dbfs: float = -6.0
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """The loop as drums/bass/other stems plus the synthetic vocal, and their exact sum.
+
+    vocal_db sets the vocal's RMS relative to the instrumental's. Every stem is stereo and
+    as long as the mix, the way stems exported from Logic are.
+    """
+    parts, _ = _loop_parts(sr, 140.0, 1, 0.12, 0.8, True)
+    instrumental = np.sum(list(parts.values()), axis=0)
+    take, _ = synthetic_vocal(sr=sr)
+    vocal = np.zeros(len(instrumental))
+    for start in range(0, len(vocal), len(take)):
+        chunk = take[: len(vocal) - start]
+        vocal[start : start + len(chunk)] = chunk
+    rms = lambda x: float(np.sqrt(np.mean(x**2)))  # noqa: E731
+    vocal *= rms(instrumental) * db_to_lin(vocal_db) / rms(_stereo(vocal))
+    stems = {**parts, "vocals": _stereo(vocal)}
+    mix = np.sum(list(stems.values()), axis=0)
+    scale = db_to_lin(peak_dbfs) / np.max(np.abs(mix))
+    return {name: stem * scale for name, stem in stems.items()}, mix * scale
 
 
 def reference_master(sr: int = SR) -> np.ndarray:

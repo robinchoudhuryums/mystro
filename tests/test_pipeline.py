@@ -123,7 +123,12 @@ def test_louder_target_is_reported_honestly(
     result = pipeline.master(fx["loop"], loud, paths, settings)
     master = result.reports["master"]
     assert master.loudness.true_peak_dbtp <= -1.0
-    assert "heavy_limiting" in {flag.code for flag in master.flags}
+    codes = {flag.code for flag in master.flags}
+    assert {"heavy_limiting", "loud_for_spotify"} <= codes
+    quieter = pipeline.master(
+        fx["loop"], MasterOptions("hip-hop/default", -10.0, -2.0), paths, settings
+    )
+    assert "loud_for_spotify" not in {f.code for f in quieter.reports["master"].flags}
     assert result.manifest.stats["max_reduction_db"] > pipeline.HEAVY_LIMITING_DB
 
 

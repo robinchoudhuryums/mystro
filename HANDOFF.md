@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 3 done (2026-11-24), Phase 3 with free plugins rather than Robin's. Next: Phase 4.
+**Status:** Phases 0 to 4 done (2026-11-24); see each phase for what still needs the Mac. Next: Phase 5.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -43,6 +43,15 @@ edited in place below and marked *[P0]*):
   final limiter always runs, so a chain's own limiter is optional.
 - The UI edits presets as TOML text and can append a scanned plugin with its current
   parameters. Per-parameter sliders are not built.
+
+**Decisions made in Phase 4** (marked *[P4]* below):
+- A stem set is a folder of equal-length float WAVs at the mix's sample rate and level, plus
+  `stems.json`, whether it came from a model or from Logic. Everything downstream treats
+  the two the same, apart from an artifact warning on separated sets.
+- audio-separator is wrapped: it rescales loud stems and always returns 44.1 kHz, so the
+  input is staged at -6 dBFS and the stems are scaled, resampled and trimmed back.
+- Model weights live in the local state folder, never in the (possibly synced) data root.
+- Stem balance is measured in LUFS: vocal against the rest, drums and bass against the mix.
 
 ---
 
@@ -154,9 +163,10 @@ src/masterbench/
     suggest.py         # suggests the best-matching reference for a mix (5.13)
     target_curve.py    # genre target curves from several references (5.14)
   stems/
-    separate.py        # audio-separator wrapper; caches stems per input hash
-    rebalance.py       # per-stem gain/EQ, re-sum, headroom management
-    stem_analysis.py   # vocal-to-instrumental ratio, drum/bass level vs reference stems
+    separate.py        ✓ audio-separator wrapper, cache per input hash and model, Logic import
+    rebalance.py       ✓ per-stem gain (±6 dB) and chain, re-sum, headroom trim
+    stem_analysis.py   ✓ vocal-to-beat, drums and bass vs mix, comparison with a reference
+    workflow.py        ✓ [P4] separate / import / diagnose / rebalance-and-master
   vocal/
     pitch_track.py     # f0 tracking, note segmentation
     tuning.py          # scale snapping, retune speed, humanize, formant-preserving shift (5.23)
@@ -199,13 +209,15 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
   Inbox/<genre>/               # default watch folder (genre inferred from subfolder)
   references/<genre>/<file> + <file>.analysis.json  (cached analysis, notes)
   references/defaults.json     # default reference per genre
+  references/<genre>/.stems/   # separated stems of references (cached)
   target_curves/<genre>.json
   presets/chains/<name>.toml
   projects/<track-slug>/
     track.json                 # slug, title, genre; source of truth for the tracks table
     blind_tests/<id>.json      # one finished blind test each
     input/<original bounce>    # same name + different content gets a hash suffix
-    stems/<model or "logic">/<stem>.wav       (cached separation or imported stems)
+    stems/<model>-<hash> or logic-<hash>/     <stem>.wav, stems.json, diagnosis.json,
+                                              rebalanced-<settings hash>.wav
     runs/<timestamp>-<short-id>/
       run.json        # all settings: reference/curve, chain preset, targets, lib versions
       master_24.wav   master_16.wav
@@ -281,7 +293,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - Presets are TOML files, used as the pre-chain or post-chain.
 
 ### 5.7 Stems
-- **Separate** into 4 stems (vocals/drums/bass/other) or 2 (vocals/instrumental), with a selectable model. Cache by input hash and model.
+- **Separate** into 4 stems (vocals/drums/bass/other) or 2 (vocals/instrumental), with a selectable model. Cache by input hash and model. *[P4]* Models: `mdx-2` (default, small), `roformer-2`, `demucs-4`, `demucs-4-fast`.
 - **Diagnose** stem balance against the reference's stems (vocal-to-instrumental, drums-to-total, bass-to-total).
 - **Rebalance:** per-stem gain (±6 dB) and simple EQ, re-summed with headroom management, then sent to mastering. Warn clearly about separation artifacts.
 - **Real stems:** import a folder of Logic-exported stems. Prefer this path whenever stems exist; it also powers alternate versions (5.20) and vocal tuning (5.23).
@@ -304,7 +316,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 ### 5.11 Streaming preview
 - **Codec preview:** encode the master as Ogg Vorbis ~320 kbps (Spotify-like), AAC 256 (Apple-like) and Opus. Decode back and add each to the A/B player.
 - **Peaks after encoding:** measure the true peak of each decoded file. Flag when encoding pushes peaks above −1 dBTP (or to clipping), and suggest a lower ceiling (e.g. −1.5 or −2 dBTP) for loud masters.
-- **Platform normalization:** simulate Spotify's Loud (−11 LUFS), Normal (−14) and Quiet (−19) settings, plus a generic −14 profile for other platforms. Show how much gain each platform would apply ("Spotify will turn this down 4.2 dB"). *[P2]* Implemented from Spotify's "Loudness normalization" support article as quoted in search results on 2026-11-24 (the page itself was unreachable from the build sandbox; re-read it on the Mac): louder masters are turned down; quieter ones are turned up only until peaks reach −1 dBFS (their example: −20 LUFS with a −5 dBFS peak plays at −16); Loud applies the full gain with a limiter (−1 dB threshold, 5 ms attack, 100 ms decay); the web player and third-party devices do not normalize. Versions of the article disagree on true-peak advice for masters louder than −14 LUFS (−1 or −2 dBTP).
+- **Platform normalization:** simulate Spotify's Loud (−11 LUFS), Normal (−14) and Quiet (−19) settings, plus a generic −14 profile for other platforms. Show how much gain each platform would apply ("Spotify will turn this down 4.2 dB"). *[P4]* Checked against Spotify's "Loudness normalization" support article on 2026-11-24: louder masters are turned down to −14; quieter ones are turned up only while 1 dB of peak headroom remains (their example: −20 LUFS with a −5 dBFS true peak plays at −16); Loud (−11) applies the full gain with a limiter (−1 dB, 5 ms attack, 100 ms decay); Normal is −14 and Quiet −19; albums played in order get one gain for the whole album (not modelled yet; relevant to Phase 5); the web player and third-party devices do not normalize. Their mastering tips: −14 LUFS integrated and under −1 dBTP, or under −2 dBTP when louder than −14. A master louder than −14 with a peak above −2 dBTP now gets a `loud_for_spotify` flag.
 - Cache the renders under `runs/<id>/previews/`.
 
 ### 5.12 Speaker simulation
@@ -492,9 +504,11 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met with a stand-in:** a preset hosting ZamCompX2 (a free VST3) saved to TOML, reloaded and produced output within 1e-6 of the original (tested; the test skips where that plugin is not installed).
 - **Still open:** the same round trip with one of Robin's own plugins, Audio Units, and Waves inside its WaveShell (`--plugin-name`). Plugins that need their editor open to initialize, or that use licensing dongles, may not load headless.
 
-**Phase 4: Stems**
+**Phase 4: Stems — DONE (2026-11-24); timing on the MacBook open**
 - Separation plus cache, stem diagnostics, rebalance, and Logic stem import.
 - *Done when:* a 3-minute track separates in a reasonable time on his MacBook (log the time), and the diagnostics show sensible ratios.
+- **Met here:** real separations ran with `mdx-2` and `demucs-4-fast` (about real time on 4 Linux CPU cores; the time is stored in `stems.json` and printed). On the fixture, Demucs put drums at -7.6 dB and bass at -3.7 dB against true values of -7.6 and -3.6. Stems from Logic give exact ratios (tested).
+- **Still open:** the timing on the M2, `roformer-2` and `demucs-4` (not run here), and ratios on a real song with a real voice. The synthetic vocal is not recognised as a voice by either model, so vocal-to-beat on separated stems is unproven.
 
 **Phase 5: Batch, AI notes, CLI, Quick Action**
 - *Done when:* a 4-track EP runs unattended with a consistency report, and mix notes return structured JSON with costs logged.
@@ -548,6 +562,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Key detection** is ambiguous for some hip-hop beats (modal loops, relative major/minor). Always show the confidence score and allow manual override, which saves per track.
 - **Spotify normalization details** change; verify against Spotify's current documentation.
 - **Codec availability** in the Homebrew ffmpeg build (libvorbis/libopus/AAC). Ubuntu's build has all three; the Mac is unchecked.
+- **Separated vocals** *[P4]*: every vocal figure from a model is an estimate until checked on real songs.
 - **Final limiter** *[P0]*: Pedalboard's `Limiter` overshoots the ceiling, so the true-peak guarantee is ours to build (5.2).
 - **Robin's answers (2026-11-24):**
   1. MacBook Pro, M2, 16 or 32 GB RAM (to be confirmed).

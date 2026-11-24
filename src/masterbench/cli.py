@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from importlib import metadata
@@ -10,17 +11,21 @@ from typing import Annotated
 
 import typer
 
-from masterbench import audio_io, config, fixtures, index, summary
+from masterbench import audio_io, config, fixtures, index, projects, summary
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.preview import streaming
 from masterbench.references import library
+from masterbench.stems import separate as stem_separation
+from masterbench.stems import workflow as stem_workflow
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="MasterBench")
 ref_app = typer.Typer(no_args_is_help=True, help="Manage the genre reference library.")
 preset_app = typer.Typer(no_args_is_help=True, help="Manage chain presets.")
 app.add_typer(ref_app, name="ref")
+stems_app = typer.Typer(no_args_is_help=True, help="Work with stems.")
 app.add_typer(preset_app, name="preset")
+app.add_typer(stems_app, name="stems")
 
 AudioFile = Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]
 ENGINE_ERRORS = (
@@ -29,6 +34,7 @@ ENGINE_ERRORS = (
     audio_io.AudioError,
     streaming.PreviewError,
     chain.ChainError,
+    stem_separation.StemError,
     LookupError,
 )
 
@@ -353,3 +359,125 @@ def plugins(
     for info in found:
         inside = f"  [{', '.join(info.names)}]" if len(info.names) > 1 else ""
         typer.echo(f"{info.format:<5} {info.path}{inside}")
+
+
+def _genre_reference(paths, genre: str | None, compare: bool) -> library.Reference | None:
+    if not compare or not genre:
+        return None
+    try:
+        return library.get(paths, genre, "default")
+    except library.ReferenceError:
+        return None
+
+
+@app.command()
+def separate(
+    mix: AudioFile,
+    model: Annotated[
+        str, typer.Option(help=f"Stem model: {', '.join(stem_separation.MODELS)}.")
+    ] = stem_separation.DEFAULT_MODEL,
+    genre: Annotated[str | None, typer.Option(help="Genre of the track.")] = None,
+    title: Annotated[str | None, typer.Option(help="Track title; groups takes of a song.")] = None,
+    compare: Annotated[
+        bool, typer.Option(help="Also separate the genre's default reference and compare.")
+    ] = True,
+) -> None:
+    """Separate a mix into stems (cached) and report the stem balance."""
+    paths, settings = config.get_paths(), config.load_settings()
+    paths.ensure()
+    try:
+        project = projects.open_project(paths, mix, title, genre)
+        typer.echo(f"separating with {model} (the first use downloads the model)...", err=True)
+        stem_set = stem_workflow.separate_mix(project, model)
+        reference = _genre_reference(paths, project.track.genre, compare)
+        diagnosis = stem_workflow.diagnose(stem_set, project.input_path, settings, reference)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    if stem_set.seconds is not None:
+        typer.echo(f"separated in {stem_set.seconds:.0f} s")
+    typer.echo(summary.stems_text(diagnosis))
+    typer.echo(f"\n{stem_set.dir}")
+
+
+@stems_app.command("import")
+def stems_import(
+    folder: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    title: Annotated[str, typer.Option(help="Track title.")],
+    genre: Annotated[str | None, typer.Option(help="Genre of the track.")] = None,
+    mix: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False, help="The bounce of the full mix.")
+    ] = None,
+    compare: Annotated[
+        bool, typer.Option(help="Compare with the genre default reference's separated stems.")
+    ] = False,
+) -> None:
+    """Import a folder of stems exported from Logic. Roles are guessed from the file names."""
+    paths, settings = config.get_paths(), config.load_settings()
+    paths.ensure()
+    try:
+        project, stem_set = stem_workflow.import_logic_stems(paths, folder, title, genre, mix)
+        reference = _genre_reference(paths, project.track.genre, compare)
+        diagnosis = stem_workflow.diagnose(stem_set, project.input_path, settings, reference)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    for name, role in stem_set.roles.items():
+        typer.echo(f"{name:<24} {role}")
+    typer.echo("")
+    typer.echo(summary.stems_text(diagnosis))
+
+
+@stems_app.command("list")
+def stems_list(track: Annotated[str, typer.Argument(help="Track slug, e.g. night-drive.")]) -> None:
+    """List a track's stem sets."""
+    sets = stem_separation.list_sets(config.get_paths().projects / track)
+    if not sets:
+        typer.echo("no stem sets")
+    for stem_set in sets:
+        kind = "separated" if stem_set.separated else "from Logic"
+        typer.echo(f"{stem_set.name:<24} {kind:<11} {', '.join(stem_set.stems)}")
+
+
+def _parse_gains(pairs: list[str]) -> dict[str, float]:
+    gains = {}
+    for pair in pairs:
+        name, _, value = pair.partition("=")
+        try:
+            gains[name.strip()] = float(value)
+        except ValueError:
+            raise typer.BadParameter(f"use NAME=DB, e.g. vocals=+2: {pair!r}") from None
+    return gains
+
+
+@app.command()
+def rebalance(
+    track: Annotated[str, typer.Argument(help="Track slug, e.g. night-drive.")],
+    gain: Annotated[
+        list[str], typer.Option("--gain", help="STEM=DB, repeatable; limited to ±6 dB.")
+    ],
+    stem_set: Annotated[
+        str | None, typer.Option("--set", help="Stem set name; default: Logic stems, else newest.")
+    ] = None,
+    ref: Annotated[str | None, typer.Option(help="Reference for mastering the result.")] = None,
+    post: Annotated[str | None, typer.Option(help="Post-chain preset.")] = None,
+) -> None:
+    """Change stem levels, re-sum, and master the result as a new run."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        chosen = stem_workflow.find_set(paths, track, stem_set)
+        data = json.loads((paths.projects / track / "track.json").read_text(encoding="utf-8"))
+        spec = ref or f"{data.get('genre') or settings.default_genre}/default"
+        options = pipeline.MasterOptions.from_settings(
+            settings, spec, title=data["title"], genre=data.get("genre"), post_chain=post
+        )
+        rebalanced, result = stem_workflow.rebalance_and_master(
+            paths, settings, chosen, _parse_gains(gain), options, progress=_progress
+        )
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    if rebalanced.trim_db < 0:
+        typer.echo(
+            f"The new balance was turned down {-rebalanced.trim_db:.1f} dB to keep headroom."
+        )
+    if chosen.separated:
+        typer.echo("Built from separated stems: listen for artifacts before trusting it.")
+    typer.echo(summary.as_text(result))
