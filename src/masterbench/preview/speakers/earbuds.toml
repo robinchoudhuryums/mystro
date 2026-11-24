@@ -1,0 +1,19 @@
+label = "Earbuds"
+description = "A mild bass lift and the treble peaks of cheap earbuds."
+
+[[module]]
+type = "low_shelf"
+freq_hz = 120.0
+gain_db = 3.0
+
+[[module]]
+type = "peak"
+freq_hz = 3000.0
+gain_db = 3.0
+q = 1.2
+
+[[module]]
+type = "peak"
+freq_hz = 8000.0
+gain_db = 4.0
+q = 2.0

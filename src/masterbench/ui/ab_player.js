@@ -73,6 +73,8 @@ class ABPlayer {
     this.offset = 0;
     this.active = 0;
     this.track = config.track || null;
+    this.sections = config.sections || [];
+    this.events = config.events || [];
     this.sources = [];
     this.duration = 0;
     this.status(config.sources && config.sources.length ? "Loading audio…" : config.message || "");
@@ -302,6 +304,7 @@ class ABPlayer {
         return row;
       })
     );
+    this.renderJumps();
     this.q(".mb-blind").textContent = blind ? "Leave blind mode" : "Blind test";
     this.q(".mb-blind").disabled = this.sources.length < 2;
     this.q(".mb-match").disabled = Boolean(blind);
@@ -311,6 +314,32 @@ class ABPlayer {
     this.q(".mb-hint").textContent = blind && !blind.revealed
       ? "Levels are matched. Click “rank” on each version from best to worst, then reveal."
       : "Keys: 1–9 switch version, space plays or pauses.";
+  }
+
+  // Buttons that move the playhead to a section or to a moment a detector flagged.
+  renderJumps() {
+    const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+    const button = (item, className) => {
+      const b = document.createElement("button");
+      b.className = className;
+      b.textContent = `${item.label} ${clock(item.start)}`;
+      if (item.title) b.title = item.title;
+      b.onclick = () => this.seek(item.start);
+      return b;
+    };
+    const label = (text) => {
+      const span = document.createElement("span");
+      span.textContent = text;
+      return span;
+    };
+    const nodes = [];
+    if ((this.sections || []).length) {
+      nodes.push(label("Sections:"), ...this.sections.map((s) => button(s, "mb-section")));
+    }
+    if ((this.events || []).length) {
+      nodes.push(label("Flagged:"), ...this.events.map((e) => button(e, "mb-event")));
+    }
+    this.q(".mb-jumps").replaceChildren(...nodes);
   }
 
   render() {

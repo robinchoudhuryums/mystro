@@ -54,9 +54,12 @@ def track_points(conn: sqlite3.Connection) -> list[TrackPoint]:
     ).fetchall()
     points = []
     for row in rows:
+        # The genre curve is the steadier yardstick; fall back to the single reference.
         deltas = conn.execute(
-            "SELECT band, delta_db FROM band_deltas WHERE analysis_id = ? AND section = 'full'",
-            (row["analysis_id"],),
+            "SELECT band, delta_db FROM band_deltas WHERE analysis_id = ? AND section = 'full'"
+            " AND vs = (SELECT vs FROM band_deltas WHERE analysis_id = ? AND section = 'full'"
+            "   ORDER BY vs = 'target_curve' DESC LIMIT 1)",
+            (row["analysis_id"], row["analysis_id"]),
         ).fetchall()
         flags = conn.execute(
             "SELECT code FROM flags WHERE analysis_id = ? ORDER BY code", (row["analysis_id"],)

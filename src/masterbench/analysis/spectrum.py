@@ -8,7 +8,7 @@ import numpy as np
 from scipy import signal
 
 from masterbench.analysis.loudness import FLOOR_DB
-from masterbench.config import BANDS
+from masterbench.config import BANDS, REGIONS
 
 SMOOTHING_FRACTION = 6
 _POINTS_PER_OCTAVE = 12
@@ -77,6 +77,16 @@ def band_levels(spectra: CrossSpectra, lufs_i: float) -> dict[str, float]:
     return {
         name: round(_db(float(power[spectra.band(low, high)].sum() * step)) - lufs_i, 2)
         for name, (low, high) in BANDS.items()
+    }
+
+
+def region_levels(spectra: CrossSpectra, lufs_i: float) -> dict[str, float]:
+    """Energy in the mud and harshness regions, in dB relative to integrated loudness."""
+    step = float(spectra.freqs[1] - spectra.freqs[0])
+    power = spectra.power
+    return {
+        name: round(_db(float(power[spectra.band(low, high)].sum() * step)) - lufs_i, 2)
+        for name, (low, high) in REGIONS.items()
     }
 
 

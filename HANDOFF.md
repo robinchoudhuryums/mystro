@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 5 done (2026-11-24); see each phase for what still needs the Mac or an API key. Next: Phase 6.
+**Status:** Phases 0 to 6 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Next: Phase 7.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -63,6 +63,21 @@ edited in place below and marked *[P0]*):
 - The repo carries Robin's cycle workflow commands in `.claude/commands/` (copied from
   `claude-workflow-tools` v1.56.0). They need a "Cycle Workflow Config" in a `CLAUDE.md`,
   which `/setup-cycle` produces; none exists yet.
+
+**Decisions made in Phase 6** (marked *[P6]* below):
+- Mixes get the full analysis (key, tempo, sections, detectors, low end); references get
+  key, tempo and sections; a master is measured over its mix's sections.
+- Sections are found by comparing eight bars before a point with eight bars after it, in
+  level and in timbre, so a loop's internal movement does not split a section. Section
+  kinds are guesses; sections with the same sound are grouped and the loudest group is the
+  hook. Hand-set sections and key are stored per track (`overrides.json`) and win.
+- When a genre has a target curve, the curve judges tonal balance in every run of that
+  genre and the single reference's deltas are recorded without flags.
+- Curve match is one linear-phase FIR (±4 dB, about a third of an octave of smoothing),
+  refined over a few passes; the EQ is stored in `run.json`.
+- Sibilance and vocal consistency run on vocal stems only. On a full mix every hi-hat reads
+  as sibilance, so the spec's full-mix fallback was dropped.
+- Flags can carry a start and end time; the player shows them, and sections, as jump buttons.
 
 ---
 
@@ -152,27 +167,27 @@ src/masterbench/
                        # still to add: deltas vs target curve (Phase 6)
     stereo.py          ✓ correlation (overall, per band), side/mid, low-end mono check
     compare.py         ✓ [P2] band and stereo flags in plain language
-    musical.py         # key, tempo, beat grid (shared by 808 tools, vocal tuning, ref matching)
-    sections.py        # automatic section detection + manual markers (5.15)
-    detectors.py       # sibilance, resonances, mud, harshness, vocal consistency (5.16)
-    lowend.py          # 808 pitch vs key, kick/808 clash (5.17)
+    musical.py         ✓ key with confidence, tempo with half/double folding, beat phase
+    sections.py        ✓ section detection, hand-set sections, per-section measures (5.15)
+    detectors.py       ✓ sibilance, resonances, harsh moments, vocal consistency, phase (5.16)
+    lowend.py          ✓ 808 pitch vs key, harmonics for small speakers, kick/808 clash (5.17)
     report.py          ✓ AnalysisReport: loudness, spectrum, bands, stereo, deltas, flags
   master/
     matchering_engine.py  ✓ wrapper around mg.process with our options
     limiter.py         ✓ [P1] lookahead true-peak limiter and loudness targeting
-    curve_match.py     # matching EQ toward a target curve, deterministic, linear phase (5.14)
+    curve_match.py     ✓ matching EQ toward a target curve, deterministic, linear phase (5.14)
     chain.py           ✓ built-in modules, VST3/AU hosting, plugin scan, state capture
     presets.py         ✓ load/save chain presets (TOML); packaged starters in presets/
     pipeline.py        ✓ validate -> pre-chain -> Matchering -> post-chain -> limit ->
                        #   export -> analyze -> index. Still to add: curve match (Phase 6)
   preview/
     streaming.py       ✓ codec round trips, post-encode peaks, platform gains (5.11)
-    speakers.py        # phone/earbuds/car/laptop/club/mono simulation (5.12)
+    speakers.py        ✓ phone/earbuds/car/laptop/club/mono simulation (5.12); profiles in speakers/
   references/
     library.py         ✓ reference CRUD; caches each reference's analysis
-    quality.py         # detects lossy rips, brickwalled or clipped references (5.13)
-    suggest.py         # suggests the best-matching reference for a mix (5.13)
-    target_curve.py    # genre target curves from several references (5.14)
+    quality.py         ✓ lossy rips, clipped, brickwalled, mono and short references (5.13)
+    suggest.py         ✓ suggests the best-matching references for a mix (5.13)
+    target_curve.py    ✓ genre target curves from several references (5.14)
   stems/
     separate.py        ✓ audio-separator wrapper, cache per input hash and model, Logic import
     rebalance.py       ✓ per-stem gain (±6 dB) and chain, re-sum, headroom trim
@@ -190,7 +205,8 @@ src/masterbench/
                        # still to add: habit detection, AI summary (Phase 7)
   blind.py             ✓ [P2] blind-test records (JSON, source of truth)
   monitoring.py        # calibration tone, session timer, break reminders (5.21)
-  projects.py          ✓ project and run storage, run manifests
+  projects.py          ✓ project and run storage, run manifests, per-track overrides
+  track.py             ✓ [P6] hand-set key and sections, low-end report with stems
   batch.py             ✓ EP mode and consistency report
   watch.py             ✓ watch folder: debounce, analyze, optional auto-master, notify
   mcp_server.py        # MCP tools over the engine (5.22)
@@ -223,9 +239,11 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
   references/<genre>/.stems/   # separated stems of references (cached)
   target_curves/<genre>.json
   presets/chains/<name>.toml
+  presets/speakers/<name>.toml # your own speaker profiles; same names override packaged ones
   batches/<id>/batch.json      # runs in the set, failures, consistency report
   projects/<track-slug>/
     track.json                 # slug, title, genre; source of truth for the tracks table
+    overrides.json             # hand-set key and section markers (with a loudness envelope)
     blind_tests/<id>.json      # one finished blind test each
     input/<original bounce>    # same name + different content gets a hash suffix
     stems/<model>-<hash> or logic-<hash>/     <stem>.wav, stems.json, diagnosis.json,
@@ -234,7 +252,7 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
       run.json        # all settings: reference/curve, chain preset, targets, lib versions
       master_24.wav   master_16.wav
       previews/       # codec round trips + streaming.json (cached, deletable);
-                      # speaker-sim renders join them in Phase 6
+                      # speaker_<profile>.wav + speakers.json
       analysis.json   notes.json + notes.md (if generated)
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
     vocal/<take>/tuned_<settings-hash>.wav, pitch_report.json
@@ -342,7 +360,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - **Mono**
 - Add each profile as a player source, with level matching. Label them clearly as **approximations**, not replacements for real checks.
 - Pair each sim with analysis: e.g. "with phone sim, the 808 fundamental is gone; perceived bass relies on harmonics at X Hz. Consider saturation."
-- Profiles live in TOML so Robin can tune them.
+- Profiles live in TOML so Robin can tune them. *[P6]* Six packaged profiles; each is a list of chain modules plus `mono` and `width`. The curves are made up from general knowledge of such speakers, not measured.
 
 ### 5.13 Reference quality checks and suggestions
 - **Quality check** on add:
@@ -350,24 +368,24 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - heavy brickwall limiting or clipping
   - mono or fake-stereo files
   - very short files
-- Show a quality badge, and exclude low-quality references from target curves by default.
+- Show a quality badge, and exclude low-quality references from target curves by default. *[P6]* Badges: good, caution (short, very heavily limited, lossy container, panned mono), poor (lossy rip by spectral cutoff, clipped, mono). Only poor is excluded from curves. Codec "holes" and comb-filtered fake stereo are not detected.
 - **Suggestions:** build a feature vector per reference (tempo, key or mode, band balance, LUFS, crest, stereo width). Rank the library by similarity to the input mix within its genre (cosine distance on normalized features), and show the top 3 with the reasons ("closest tempo and low-end balance").
 
 ### 5.14 Genre target curves
 - Pick N references in a genre, normalize each to equal loudness, and compute the **median spectrum** plus a **25th–75th percentile band**. Save the result to `target_curves/<genre>.json`.
 - **Analysis use:** plot the mix against the median and the band. A delta only counts as an issue when the mix falls **outside the band**, which is steadier than matching one song.
 - **Mastering use (curve match mode):** design a smoothed matching EQ (limited to about ±4 dB, linear-phase FIR), then gain and the post-chain limiter. It's deterministic and repeatable, and it's the basis for locked processing (5.20). Offer it as an alternative to Matchering and in comparisons.
-- Track section-level target curves too, when sections are labeled (hook/drop).
+- Track section-level target curves too, when sections are labeled (hook/drop). *[P6]* The curve stores hook band ranges and the references' median hook-minus-verse contrast; the contrast is used for flags, the hook bands are stored but not yet compared.
 
 ### 5.15 Analysis by song section
 - **Automatic sections:** combine librosa structural segmentation with loudness to propose sections (intro/verse/hook/drop/bridge/outro). Always find the **loudest 30-second window** (usually the hook or drop) and the quietest full section.
-- **Manual markers:** drag markers on a waveform in the UI. Save them to the project and reuse them on later runs of the same track (aligned by duration and cross-correlation).
+- **Manual markers:** drag markers on a waveform in the UI. Save them to the project and reuse them on later runs of the same track (aligned by duration and cross-correlation). *[P6]* Markers are typed (`0 intro, 0:14 verse, 0:41 hook`) in the Analyze tab or `masterbench sections RUN --set`; there is no waveform to drag on yet. Alignment correlates loudness envelopes.
 - Run loudness, band deltas, stereo and the detectors **per section**. Compare hook to reference hook, drop to drop.
 - Flags such as "hook is only 0.8 LU louder than verse (reference: 2.5 LU)" or "drop has 2 dB less sub than the reference drop."
 
 ### 5.16 Problem detectors
-- **Sibilance:** short-time energy spikes in 5–10 kHz on the vocal stem (or the full mix if there are no stems), with timestamps and severity.
-- **Resonances:** narrow peaks rising above the smoothed spectrum that persist over time, reported as frequency, Q estimate and gain.
+- **Sibilance:** short-time energy spikes in 5–10 kHz on the vocal stem (or the full mix if there are no stems), with timestamps and severity. *[P6]* Vocal stems only; see the Phase 6 decisions.
+- **Resonances:** narrow peaks rising above the smoothed spectrum that persist over time, reported as frequency, Q estimate and gain. *[P6]* Peaks that sit on a musical pitch are skipped, since a held note looks the same.
 - **Mud:** excess 200–500 Hz compared with the target curve band, per section.
 - **Harshness:** excess 2–5 kHz, with short-term spikes.
 - **Vocal level consistency:** the vocal stem's short-term loudness relative to the instrumental over time. Flag phrases that drop or jump by more than a set number of dB.
@@ -529,7 +547,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met against a stand-in only:** the notes request is built by the real Anthropic SDK and answered by a local fake server in the tests: structured JSON parsed, cost logged, cache and cap enforced. **No request has reached the real API**, so whether the API accepts this exact parameter combination, and how good the notes are, is unknown.
 - **Untried:** the Automator Quick Action (macOS only).
 
-**Phase 6: Deep analysis**
+**Phase 6: Deep analysis — DONE on fixtures (2026-11-24); untested on real music**
 - Key and tempo (5.4 musical), **sections** (5.15), **detectors** (5.16), **hip-hop low-end tools** (5.17), **reference quality and suggestions** (5.13), **genre target curves plus curve match mode** (5.14), and **speaker simulation** (5.12).
 - *Done when:*
   - key detection is right on the fixtures
@@ -537,6 +555,8 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - the clipped or lossy-rip fixture references get flagged
   - curve match lands within ±1 dB of the target median in every band on pink noise
   - the section-loudness flags work on a fixture with a known quiet verse and loud hook
+- **Met (all tested):** key is F minor on every pitched fixture; the detuned 808 note reads +35.0 cents against a planted +35; clipped, mono and lossy-rip references are badged poor; curve match lands within 0.25 dB of the target median in every band on pink noise; a hook only 1.3 LU over its verse is flagged, alone and against a reference or curve with 6 LU.
+- **What that does not show:** every threshold here was tuned on synthetic audio. Section detection, kind guessing, the detectors and key detection have not met a real song, and relative major/minor confusion on real beats is likely. Treat the first real results as calibration.
 
 **Phase 7: Integrations and release**
 - **MCP server** (5.22), **alternate versions with locked processing** (5.20), **listening-level calibration and break reminders** (5.21), and **progress tracker v2** (habit detection plus AI trend summary, 5.18).

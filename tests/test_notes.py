@@ -220,5 +220,5 @@ def test_key_is_found_without_being_shown(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_prompt_is_versioned() -> None:
     prompt, version = mix_notes.system_prompt()
-    assert version == 1 and "Logic Pro" in prompt
+    assert version == 2 and "Logic Pro" in prompt
     assert mix_notes.payload_hash({}, "m", 1) != mix_notes.payload_hash({}, "m", 2)

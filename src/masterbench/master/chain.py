@@ -57,6 +57,7 @@ class PluginInfo:
 
 BUILTIN: dict[str, dict[str, Param]] = {
     "highpass": {"cutoff_hz": Param(30.0, 10.0, 1000.0)},
+    "lowpass": {"cutoff_hz": Param(12000.0, 200.0, 20000.0)},
     "low_shelf": {
         "freq_hz": Param(100.0, 20.0, 1000.0),
         "gain_db": Param(0.0, -12.0, 12.0),
@@ -118,6 +119,8 @@ def _native(module: Module) -> list[pb.Plugin]:
     s = _settings(module)
     if module.type == "highpass":
         return [pb.HighpassFilter(cutoff_frequency_hz=s["cutoff_hz"])]
+    if module.type == "lowpass":
+        return [pb.LowpassFilter(cutoff_frequency_hz=s["cutoff_hz"])]
     if module.type == "low_shelf":
         return [pb.LowShelfFilter(cutoff_frequency_hz=s["freq_hz"], gain_db=s["gain_db"], q=s["q"])]
     if module.type == "high_shelf":

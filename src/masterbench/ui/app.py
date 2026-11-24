@@ -7,15 +7,17 @@ from pathlib import Path
 import gradio as gr
 
 from masterbench import audio_io, batch, index, progress, projects, summary
+from masterbench import track as track_tools
 from masterbench.analysis.compare import BAND_LABELS
+from masterbench.analysis.report import analyze_audio
 from masterbench.config import Paths, Settings
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
 from masterbench.notes import mix_notes
-from masterbench.preview import streaming
+from masterbench.preview import speakers, streaming
 from masterbench.preview.streaming import StreamingPreview
-from masterbench.references import library
+from masterbench.references import library, suggest, target_curve
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 from masterbench.stems.separate import StemSet
@@ -33,8 +35,11 @@ ENGINE_ERRORS = (
     chain.ChainError,
     stem_separation.StemError,
     mix_notes.NotesError,
+    track_tools.TrackError,
+    target_curve.CurveError,
     LookupError,
 )
+MATCH_REFERENCE, MATCH_CURVE = "One reference track", "Genre target curve"
 NO_REFERENCES = (
     "No references yet. Add one in the **Library** tab, "
     "or run `masterbench ref add <file> --genre <genre>`."
@@ -71,12 +76,20 @@ def run_choices(paths: Paths) -> list[tuple[str, str]]:
     ]
 
 
+def quality_text(ref: library.Reference) -> str:
+    if ref.quality is None:
+        return "unchecked"
+    issues = ", ".join(flag.code.replace("_", " ") for flag in ref.quality.issues)
+    return f"{ref.quality.badge}: {issues}" if issues else ref.quality.badge
+
+
 def library_rows(paths: Paths) -> list[list[str]]:
     return [
         [
             ref.genre,
             ref.name,
             "yes" if ref.is_default else "",
+            quality_text(ref),
             f"{ref.report.loudness.lufs_i:.1f}",
             f"{ref.report.loudness.true_peak_dbtp:+.1f}",
             ref.notes,
@@ -149,14 +162,29 @@ def stereo_markdown(result: RunResult) -> str:
     return "\n".join(lines)
 
 
-def analysis_view(result: RunResult, settings: Settings) -> tuple:
-    """Values for (spectrum plot, band plot, loudness plot, stereo table, flags)."""
+def song_markdown(result: RunResult) -> str:
+    """Key, tempo and sections of the mix."""
+    mix = result.reports["mix"]
+    parts = [summary.musical_line(mix), summary.sections_markdown(mix)]
+    return "\n\n".join(part for part in parts if part)
+
+
+def analysis_view(result: RunResult, settings: Settings, paths: Paths) -> tuple:
+    """Values for (spectrum, bands, loudness, stereo, flags, song, low end, markers, key)."""
+    mix = result.reports["mix"]
+    track = result.manifest.track
+    overrides = projects.read_overrides(paths.projects / track.slug)
+    markers = track_tools.markers_text(mix.sections) if mix.sections else ""
     return (
-        charts.spectrum(result.reports),
+        charts.spectrum(result.reports, target_curve.load(paths, track.genre)),
         charts.band_deltas(result.reports, settings.thresholds.band_delta_db),
         charts.loudness_over_time(result.reports),
         stereo_markdown(result),
         summary.flags_markdown(result),
+        song_markdown(result),
+        summary.lowend_markdown(mix.lowend),
+        markers,
+        overrides.get("key") or (mix.musical.key if mix.musical else ""),
     )
 
 
@@ -201,7 +229,12 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     value=None,
                 )
                 genre = gr.Dropdown(label="Genre", choices=genres, value=genre_default)
+                match_mode = gr.Radio(
+                    label="Match to", choices=[MATCH_REFERENCE, MATCH_CURVE], value=MATCH_REFERENCE
+                )
                 reference = gr.Dropdown(label="Reference", choices=refs, value=ref_default)
+                suggest_button = gr.Button("Suggest a reference for this mix", size="sm")
+                suggest_md = gr.Markdown()
                 with gr.Accordion("Targets", open=False):
                     target = gr.Number(label="Loudness (LUFS)", value=settings.targets.lufs_i)
                     ceiling = gr.Number(
@@ -232,7 +265,9 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     multiselect=True,
                     scale=2,
                 )
-                cmp_render = gr.Button("Render streaming previews", scale=1)
+                with gr.Column(scale=1):
+                    cmp_render = gr.Button("Render streaming previews")
+                    cmp_speakers = gr.Button("Render speaker sims")
             cmp_stems = gr.Checkbox(label="Add stem solos (when this track has stems)")
             ab_player = player.component(paths)
             gr.Markdown(
@@ -246,6 +281,22 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             loudness_plot = gr.Plot()
             stereo_md = gr.Markdown()
             an_flags = gr.Markdown()
+            song_md = gr.Markdown()
+            with gr.Accordion("Correct the key or the sections", open=False):
+                gr.Markdown(
+                    "Detection guesses. What you set here is saved for the track and used the "
+                    "next time it is analyzed or mastered. Sections: a start time and a kind "
+                    "(intro, verse, hook, bridge, outro), e.g. `0 intro, 0:14 verse, 0:41 hook`."
+                )
+                with gr.Row():
+                    markers_box = gr.Textbox(label="Sections", scale=4)
+                    markers_save = gr.Button("Save sections", scale=1)
+                with gr.Row():
+                    key_box = gr.Textbox(label="Key (e.g. F minor)", scale=4)
+                    key_save = gr.Button("Save key", scale=1)
+                override_status = gr.Markdown()
+            lowend_md = gr.Markdown()
+            lowend_button = gr.Button("Measure the low end again, using stems when there are any")
             with gr.Accordion("AI mix notes (optional; sends numbers, never audio)", open=False):
                 with gr.Row():
                     notes_intent = gr.Textbox(
@@ -319,7 +370,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         with gr.Tab("Library"):
             table = gr.Dataframe(
                 value=library_rows(paths),
-                headers=["Genre", "Name", "Default", "LUFS-I", "True peak", "Notes"],
+                headers=["Genre", "Name", "Default", "Quality", "LUFS-I", "True peak", "Notes"],
                 type="array",
                 interactive=False,
             )
@@ -333,6 +384,14 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     new_default = gr.Checkbox(label="Make it the genre default")
                     add = gr.Button("Add reference", variant="primary")
             library_status = gr.Markdown()
+            gr.Markdown("### Genre target curves")
+            with gr.Row():
+                curve_genre = gr.Dropdown(label="Genre", choices=genres, value=genre_default)
+                curve_build = gr.Button("Build the target curve from this genre's references")
+            curve_status = gr.Markdown(
+                "A curve is the median spectrum of a genre's references and the range they cover. "
+                "References badged poor are left out."
+            )
             gr.Markdown("### Chain presets")
             with gr.Row():
                 with gr.Column(scale=2):
@@ -372,17 +431,28 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             return gr.Dropdown(choices=choices, value=value)
 
         def on_master(
-            uploaded, run_id, selected_genre, spec, lufs, peak, pre, post, progress=gr.Progress()
+            uploaded,
+            run_id,
+            selected_genre,
+            spec,
+            lufs,
+            peak,
+            pre,
+            post,
+            mode,
+            progress=gr.Progress(),
         ):
-            if not spec:
+            by_curve = mode == MATCH_CURVE
+            if not spec and not by_curve:
                 raise gr.Error("Add a reference in the Library tab first.")
             options = MasterOptions(
-                spec,
+                spec or "",
                 lufs,
                 peak,
                 genre=selected_genre,
                 pre_chain=pre or None,
                 post_chain=post or None,
+                mode="curve" if by_curve else "matchering",
             )
             try:
                 result = pipeline.master(
@@ -468,7 +538,9 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             preview = streaming.load(result) if result.manifest.outputs else None
             extras = [pipeline.load_run(paths, i) for i in extra_ids or []]
             sets = stem_workflow.sets_for_run(result) if with_stems else []
-            return player.config(result, preview, extras, sets[0] if sets else None), preview
+            sims = speakers.load(result)
+            config_json = player.config(result, preview, extras, sets[0] if sets else None, sims)
+            return config_json, preview
 
         def on_compare_run(run_id: str | None, with_stems: bool):
             result = load(run_id)
@@ -492,11 +564,90 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 raise gr.Error(str(exc)) from exc
             return compare_config(run_id, extra_ids, with_stems)[0], streaming_markdown(preview)
 
+        def on_speakers(run_id: str | None, extra_ids: list[str] | None, with_stems: bool):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                sims = speakers.render(result, paths)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            lines = [f"- **{sim.label}:** {sim.message}" for sim in sims]
+            text = "\n".join([*lines, "", f"_{speakers.NOTICE}_"])
+            return compare_config(run_id, extra_ids, with_stems)[0], text
+
         def on_analysis_run(run_id: str | None):
             result = load(run_id)
             if result is None:
-                return (gr.skip(),) * 5
-            return analysis_view(result, settings)
+                return (gr.skip(),) * 9
+            return analysis_view(result, settings, paths)
+
+        def on_markers_save(run_id: str | None, text: str):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                if text.strip():
+                    found = track_tools.set_sections(result, text)
+                    saved = f"Saved: {track_tools.markers_text(found)}."
+                else:
+                    track_tools.clear_sections(result)
+                    saved = "Cleared; sections are detected again."
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return f"{saved} Analyze or master the track again to apply it."
+
+        def on_key_save(run_id: str | None, text: str):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                slug = result.manifest.track.slug
+                saved = track_tools.set_key(paths, slug, text.strip() or None)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            what = f"Key set to {saved}." if saved else "Cleared; the key is detected again."
+            return f"{what} Analyze or master the track again to apply it."
+
+        def on_lowend(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                found = track_tools.low_end(result, paths, settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return summary.lowend_markdown(found)
+
+        def on_suggest(uploaded, run_id, selected_genre):
+            if not selected_genre:
+                raise gr.Error("Choose a genre first.")
+            source = source_file(uploaded, run_id)
+            try:
+                audio, info = audio_io.load(source)
+                report = analyze_audio(audio, info, source, "reference", settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            found = suggest.suggest(report, library.list_references(paths, selected_genre))
+            if not found:
+                return f"No references in {selected_genre} to compare with.", gr.skip()
+            choices, _ = reference_choices(paths, selected_genre)
+            suggested = [(f"Suggested: {s.reference.name}", s.reference.spec) for s in found]
+            rest = [c for c in choices if c[1] not in {spec for _, spec in suggested}]
+            lines = [f"- **{s.reference.name}**: {s.why or 'nearest overall'}" for s in found]
+            picker = gr.Dropdown(choices=[*suggested, *rest], value=suggested[0][1])
+            return "\n".join(lines), picker
+
+        def on_curve_build(selected_genre: str | None):
+            if not selected_genre:
+                raise gr.Error("Choose a genre.")
+            try:
+                curve = target_curve.build(paths, selected_genre)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            used = ", ".join(curve.references)
+            count = len(curve.references)
+            return f"Built the **{curve.genre}** curve from {count} references: {used}."
 
         def refresh_runs(current: str | None):
             return gr.Dropdown(choices=run_choices(paths), value=current)
@@ -744,15 +895,30 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         plugin_add.click(on_plugin_add, [preset_text, plugin_path, plugin_inner], preset_text)
         after_run = [*view, previous, cmp_run, an_run]
         master_inputs = [mix, previous, genre, reference, target, ceiling, pre_chain, post_chain]
-        run.click(on_master, master_inputs, after_run)
+        run.click(on_master, [*master_inputs, match_mode], after_run)
         analyze.click(on_analyze, [mix, previous, genre], after_run)
         cmp_run.change(on_compare_run, [cmp_run, cmp_stems], [ab_player, cmp_extra, stream_md])
         cmp_extra.input(on_compare_extra, [cmp_run, cmp_extra, cmp_stems], ab_player)
         cmp_stems.input(on_compare_extra, [cmp_run, cmp_extra, cmp_stems], ab_player)
         cmp_render.click(on_render, [cmp_run, cmp_extra, cmp_stems], [ab_player, stream_md])
-        an_run.change(
-            on_analysis_run, an_run, [spectrum_plot, band_plot, loudness_plot, stereo_md, an_flags]
-        )
+        cmp_speakers.click(on_speakers, [cmp_run, cmp_extra, cmp_stems], [ab_player, stream_md])
+        analysis_outputs = [
+            spectrum_plot,
+            band_plot,
+            loudness_plot,
+            stereo_md,
+            an_flags,
+            song_md,
+            lowend_md,
+            markers_box,
+            key_box,
+        ]
+        an_run.change(on_analysis_run, an_run, analysis_outputs)
+        markers_save.click(on_markers_save, [an_run, markers_box], override_status)
+        key_save.click(on_key_save, [an_run, key_box], override_status)
+        lowend_button.click(on_lowend, an_run, lowend_md)
+        suggest_button.click(on_suggest, [mix, previous, genre], [suggest_md, reference])
+        curve_build.click(on_curve_build, curve_genre, curve_status)
         compare_tab.select(refresh_runs, cmp_run, cmp_run)
         analyze_tab.select(refresh_runs, an_run, an_run)
         progress_tab.select(

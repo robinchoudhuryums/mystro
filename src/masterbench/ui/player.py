@@ -12,6 +12,7 @@ import gradio as gr
 from masterbench import blind, index
 from masterbench.config import Paths
 from masterbench.master.pipeline import RunResult
+from masterbench.preview.speakers import SpeakerPreview
 from masterbench.preview.streaming import StreamingPreview
 from masterbench.stems.separate import StemSet
 
@@ -33,6 +34,7 @@ TEMPLATE = """
     <button class="mb-blind">Blind test</button>
     <button class="mb-save">Reveal and save</button>
   </div>
+  <div class="mb-jumps"></div>
   <div class="mb-hint"></div>
   <div class="mb-status"></div>
 </div>
@@ -56,6 +58,10 @@ CSS = """
 .mb-transport, .mb-options { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mb-seek { flex: 1; min-width: 200px; }
 .mb-play { min-width: 72px; }
+.mb-jumps { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.mb-jumps button { padding: 3px 9px; font-size: 0.85em; }
+.mb-jumps .mb-event { border-style: dashed; }
+.mb-jumps span { color: var(--body-text-color-subdued); font-size: 0.85em; }
 """
 
 
@@ -138,14 +144,52 @@ def config(
     preview: StreamingPreview | None = None,
     extra: list[RunResult] | None = None,
     stems: StemSet | None = None,
+    sims: list[SpeakerPreview] | None = None,
 ) -> str:
     """JSON for the player component's value."""
     if run is None:
         return json.dumps({"sources": [], "message": "Choose a run to load its audio."})
     listed = sources(run, preview) + [other_master(other) for other in extra or []]
     listed += stem_sources(stems) if stems else []
+    listed += [
+        {
+            "id": f"speaker_{sim.name}",
+            "label": f"Sim: {sim.label}",
+            "url": file_url(run.run_dir / sim.file),
+            "lufs": sim.lufs_i,
+        }
+        for sim in sims or []
+    ]
     selected = "master" if any(s["id"] == "master" for s in listed) else "mix"
-    return json.dumps({"track": run.manifest.track.slug, "selected": selected, "sources": listed})
+    return json.dumps(
+        {
+            "track": run.manifest.track.slug,
+            "selected": selected,
+            "sources": listed,
+            "sections": jump_sections(run),
+            "events": jump_events(run),
+        }
+    )
+
+
+def jump_sections(run: RunResult) -> list[dict[str, Any]]:
+    parts = run.reports["mix"].sections
+    if parts is None or len(parts.items) < 2:
+        return []
+    return [{"label": item.label, "start": item.start_s} for item in parts.items]
+
+
+def jump_events(run: RunResult) -> list[dict[str, Any]]:
+    """Flags that point at a moment, earliest first, one per code and time."""
+    seen, events = set(), []
+    for flag in run.flags:
+        if flag.start_s is None or (flag.code, flag.start_s) in seen:
+            continue
+        seen.add((flag.code, flag.start_s))
+        events.append(
+            {"label": flag.code.replace("_", " "), "start": flag.start_s, "title": flag.message}
+        )
+    return sorted(events, key=lambda e: e["start"])[:24]
 
 
 def component(paths: Paths) -> gr.HTML:

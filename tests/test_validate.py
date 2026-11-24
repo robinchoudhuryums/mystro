@@ -15,7 +15,7 @@ def codes(path: Path, settings: Settings) -> set[str]:
 
 
 def test_clean_mix_has_no_flags(fx: dict[str, Path], settings: Settings) -> None:
-    assert codes(fx["loop"], settings) == set()
+    assert codes(fx["loop"], settings) == {"bass_detuned"}, "only the planted detuned 808 note"
 
 
 def test_clipped_mix_is_flagged_with_the_logic_hint(

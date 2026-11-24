@@ -119,7 +119,13 @@ def _analysis(report: AnalysisReport) -> dict[str, Any]:
         },
         "loudness": {key: round(value, 2) for key, value in asdict(report.loudness).items()},
         "flags": [
-            {"code": f.code, "severity": f.severity, "message": f.message, "value": f.value}
+            {
+                "code": f.code,
+                "severity": f.severity,
+                "message": f.message,
+                "value": f.value,
+                "at_s": f.start_s,
+            }
             for f in report.flags
         ],
     }
@@ -133,6 +139,45 @@ def _analysis(report: AnalysisReport) -> dict[str, Any]:
         # One point per third of an octave is plenty for a written review.
         freqs, levels = report.spectrum.freqs_hz[::4], report.spectrum.level_db[::4]
         data["spectrum"] = {"freqs_hz": freqs, "level_db": levels}
+    if report.curve_deltas:
+        data["band_deltas_vs_genre_curve_db"] = report.curve_deltas
+    if report.musical:
+        music = report.musical
+        data["musical"] = {
+            "key": music.key,
+            "key_confidence": music.key_confidence,
+            "tempo_bpm": music.tempo_bpm,
+        }
+    if report.sections and len(report.sections.items) > 1:
+        parts = report.sections
+        data["sections"] = {
+            "source": parts.source,
+            "hook_minus_verse_lu": parts.contrast_lu,
+            "items": [
+                {
+                    "label": item.label,
+                    "start_s": item.start_s,
+                    "end_s": item.end_s,
+                    "lufs": item.lufs,
+                    "band_deltas_db": item.band_deltas,
+                }
+                for item in parts.items
+            ],
+        }
+    if report.lowend and report.lowend.notes:
+        low = report.lowend
+        off = [n for n in low.notes if abs(n.cents) > 15 or n.in_key is False]
+        data["low_end"] = {
+            "measured_from": low.source,
+            "in_tune_share": low.in_tune_share,
+            "notes_off": [
+                {"at_s": n.start_s, "note": n.note, "cents": n.cents, "in_key": n.in_key}
+                for n in off[:12]
+            ],
+            "strongest_harmonic_hz": low.harmonic_hz,
+            "harmonics_db_below_fundamental": low.harmonics_db,
+            "kick_clash": asdict(low.clash) if low.clash else None,
+        }
     if report.short_term_lufs:
         curve = report.short_term_lufs
         step = max(1, len(curve) // 60)
@@ -183,6 +228,9 @@ def build_payload(run: RunResult, intent: str = "") -> dict[str, Any]:
     stems = _stems(run)
     if stems:
         payload["stems"] = stems
+    curve = run.manifest.settings.get("curve")
+    if curve:
+        payload["genre_curve"] = {"genre": curve["genre"], "references": len(curve["references"])}
     preview = streaming.load(run) if run.manifest.outputs else None
     if preview:
         payload["streaming"] = {

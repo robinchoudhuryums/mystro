@@ -140,3 +140,20 @@ def iter_run_dirs(paths: Paths) -> list[Path]:
     """Every complete run on disk, oldest first."""
     found = [p.parent for p in paths.projects.glob("*/runs/*/run.json")]
     return sorted(found, key=lambda run_dir: run_dir.name)
+
+
+OVERRIDES_FILE = "overrides.json"
+
+
+def read_overrides(project_dir: Path) -> dict[str, Any]:
+    """What the user set by hand for a track: key, section markers."""
+    file = project_dir / OVERRIDES_FILE
+    return json.loads(file.read_text(encoding="utf-8")) if file.exists() else {}
+
+
+def write_overrides(project_dir: Path, **changes: Any) -> dict[str, Any]:
+    """Set (or, with None, clear) overrides for a track."""
+    current = {**read_overrides(project_dir), **changes}
+    current = {key: value for key, value in current.items() if value is not None}
+    write_json(project_dir / OVERRIDES_FILE, current)
+    return current

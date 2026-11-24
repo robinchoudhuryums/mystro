@@ -61,7 +61,7 @@ def test_master_hits_the_streaming_target(
 
     assert audio_io.file_sha256(fx["loop"]) == source_hash, "the input file is never modified"
     assert audio_io.file_sha256(result.mix_path) == source_hash
-    assert result.flags == []
+    assert [f.code for f in result.flags] == ["bass_detuned"], "the planted detuned 808 note"
     assert [f for _, f in stages] == sorted(f for _, f in stages) and stages[-1] == ("Done", 1.0)
 
 
@@ -197,7 +197,9 @@ def test_deleting_the_database_and_reindexing_restores_it(
         index.sync_references(conn, paths)
     before = dump(paths)
     assert len(before["runs"]) == 3 and len(before["references"]) == 1 and before["flags"]
-    assert len(before["band_deltas"]) == 7 * 5, "mix and master of two runs, mix of the third"
+    full = [row for row in before["band_deltas"] if row[6] == "full"]
+    assert len(full) == 7 * 5, "mix and master of two runs, mix of the third"
+    assert len(before["band_deltas"]) == 2 * len(full), "and the same again per section"
 
     for leftover in paths.root.glob("masterbench.db*"):
         leftover.unlink()

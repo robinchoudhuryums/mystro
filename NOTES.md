@@ -306,6 +306,57 @@ the Analyze tab, `quick_action/`. Robin's cycle workflow commands were added und
 - Album-mode normalization is described in the batch report but not computed, because
   Spotify's article does not say how the album gain is derived.
 
+## Phase 6: deep analysis (2026-11-24)
+
+### What was built
+
+Key and tempo, sections, problem detectors, 808 tools, reference quality and suggestions,
+genre target curves with curve-match mastering, speaker simulation.
+New commands: `master --curve`, `curve build|show`, `ref suggest|refresh`, `sections`, `key`,
+`lowend`, `speakers`. The Analyze tab shows key, tempo, sections and the low-end table and
+lets them be corrected; the player has jump buttons for sections and flagged moments.
+291 tests pass.
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| Comparing a few seconds either side of a point splits a looped beat at every bar where the 808 note changes. | Section boundaries are judged over eight bars either side (from the detected tempo; 12 s without one). A 15-times-repeated loop then reads as one section. |
+| Deciding hook versus verse by level alone fails exactly when it matters: a hook 1 LU over its verse looks like the verse. | Sections are grouped by timbre first; the loudest group is the hook. The weak hook is then recognised and flagged. |
+| A level-step search alone finds boundaries to within 0.5 s; timbre clustering alone is 1 to 2 s off. | Level steps place the boundary; timbre boundaries are kept only where no step is within 2.5 s. |
+| On a full mix the sibilance detector fires on every hi-hat. | Sibilance runs on vocal stems only (in the stem diagnosis). |
+| A held note and a resonance are the same thing in a long-term spectrum. | Narrow peaks within 20 cents of a musical pitch are skipped; others must be present 60% of the time their region sounds. A resonance that lands on a note is missed. |
+| A kick landing on a held 808 breaks the pitch track in two. | Consecutive notes of the same pitch within 0.3 s are rejoined. |
+| Low-passed noise looks pitched to pYIN. | A note needs its spectral peak 32 dB above the low band's median, and a fundamental under about 160 Hz. |
+| MP3 at 128 kbps cuts off at 17 kHz on the fixture; at 320 kbps the cutoff is 20.5 kHz. | A cutoff under 19.5 kHz is called a lossy rip, whatever the file extension. High-bitrate lossy files pass on spectrum and are only cautioned for their format. |
+| EQ changes loudness, and levels are relative to loudness. | The matching EQ is refined over up to four passes; on pink noise it ends within 0.05 dB of the curve. |
+| The loop fixture's planted detuned note is now found everywhere. | Tests that expected "no flags" on the loop now expect exactly that one. |
+
+### Measurements
+
+| Check | Result |
+|---|---|
+| Detuned 808 note (planted +35 cents) | read as +35.0 to +35.1 cents, from the full mix |
+| Section boundaries on the 69 s fixture song | within 0.75 s of the truth, kinds all correct, at both strong and weak contrast |
+| Curve match on pink noise, three-reference curve | within 0.05 dB in every band (criterion: 1 dB); bit-identical on repeat |
+| Full analysis of a 206 s, 48 kHz mix (4 CPU cores) | 16 s, up from 7 s before this phase |
+| Whole test suite | 291 tests, about 10 minutes |
+
+### Known gaps
+
+- **Nothing here has been run on real music.** Thresholds for section grouping, the
+  detectors and reference quality came from synthetic fixtures.
+- Section kinds are guesses. A song whose hook is quieter than its verse will be labelled
+  backwards; hand-set sections fix that per track.
+- 808 glides and slides are not modelled; a sliding note is dropped or read at one pitch.
+- The kick/808 clash needs drum and bass stems (Logic stems or a four-stem separation).
+- Speaker profiles are plausible EQ shapes, not measurements of real devices.
+- Section markers are typed, not dragged on a waveform.
+- With two or three references a curve's range is narrow, so small differences fall
+  outside it. It becomes meaningful with five or more.
+- essentia was not evaluated as an alternative key detector.
+- Stem diagnostics and low-end results are still not in the SQLite index.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -324,6 +375,10 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 5. **watchdog** on the FSEvents backend (inotify was used here).
 6. **Notifications** through `osascript` or `terminal-notifier` (only the latter can open
    the run link on click), the Quick Action, and the LaunchAgent.
+6c. **Phase 6 on real tracks:** analyze a few finished songs and check the key, the
+   sections (`masterbench sections RUN_ID`), the 808 table (`masterbench lowend RUN_ID`),
+   and whether the flags match what you hear. Add five or more references to a genre and
+   run `masterbench curve build GENRE`.
 6a. **AI notes:** run `masterbench notes RUN_ID --payload` to see what would be sent, then
    without `--payload` once a key is set. This is the first live call.
 6b. **Quick Action:** follow `quick_action/README.md`.

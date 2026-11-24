@@ -1,0 +1,18 @@
+label = "Car"
+description = "Cabin gain in the low end and a slightly rolled-off top."
+
+[[module]]
+type = "low_shelf"
+freq_hz = 80.0
+gain_db = 5.0
+
+[[module]]
+type = "peak"
+freq_hz = 150.0
+gain_db = 2.0
+q = 1.0
+
+[[module]]
+type = "high_shelf"
+freq_hz = 6000.0
+gain_db = -3.0

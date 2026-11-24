@@ -42,7 +42,7 @@ def test_run_view_points_players_at_real_files(
     options = MasterOptions.from_settings(settings, "hip-hop/default")
     result = pipeline.master(fx["loop"], options, paths, settings)
     markdown, flags, mix, master, ref, downloads = app.run_view(result)
-    assert "| Master | -14.0 |" in markdown and flags == "No flags."
+    assert "| Master | -14.0 |" in markdown and "35 cents sharp of C2" in flags
     assert Path(mix).is_file() and Path(master).name == "master_24.wav"
     assert Path(ref) == reference.path
     assert [Path(p).name for p in downloads] == ["master_24.wav", "master_16.wav"]
@@ -99,13 +99,18 @@ def test_analysis_and_progress_views_build(
 ) -> None:
     options = MasterOptions.from_settings(settings, "hip-hop/default")
     result = pipeline.master(fx["loop"], options, paths, settings)
-    spectrum_plot, band_plot, loudness_plot, stereo_text, flags = app.analysis_view(
-        result, settings
-    )
+    view = app.analysis_view(result, settings, paths)
+    spectrum_plot, band_plot, loudness_plot, stereo_text, flags, song, low, markers, key = view
     assert [t.name for t in spectrum_plot.data] == ["Mix", "Master", "Reference"]
     assert [t.name for t in band_plot.data] == ["Mix", "Master"]
     assert [t.name for t in loudness_plot.data] == ["Mix", "Master"]
-    assert "| Master | +0.9" in stereo_text and flags == "No flags."
+    assert "| Master | +0.9" in stereo_text and "35 cents sharp of C2" in flags
+    assert (
+        song.startswith("Key F minor")
+        and "C2" in low
+        and markers == "0 section"
+        and key == "F minor"
+    )
 
     blind.record(
         paths,
@@ -119,7 +124,7 @@ def test_analysis_and_progress_views_build(
     trends, loudness_trends, flag_plot, rows = app.progress_view(paths)
     assert len(trends.data) == 7 and len(loudness_trends.data) == 3
     assert rows[0][1:] == ["loop", "Master", "Master > Mix"]
-    assert flag_plot.layout.annotations[0].text == "No flags raised so far."
+    assert list(flag_plot.data[0].y) == ["bass detuned"], "the loop's planted detuned note"
 
 
 def test_empty_progress_view_explains_itself(paths: Paths) -> None:
@@ -149,3 +154,39 @@ def test_stems_reach_the_player_and_the_rebalance_table(
     labels = [s["label"] for s in config["sources"]]
     assert labels == ["Mix", *[f"Stem: {n} (Logic)" for n in ("bass", "drums", "other", "vocals")]]
     assert all(Path(s["url"].split("=", 1)[1]).is_file() for s in config["sources"])
+
+
+def test_phase_six_views(paths: Paths, settings: Settings, tmp_path: Path) -> None:
+    from masterbench import fixtures
+    from masterbench.preview import speakers
+    from masterbench.references import target_curve
+    from masterbench.ui import charts
+
+    for name, verse_db in (("a", -7.0), ("b", -5.0)):
+        song = fixtures.arranged_song(verse_db=verse_db, seed=ord(name))[0]
+        library.add(paths, fixtures.write_wav(tmp_path / f"{name}.wav", song), "hip-hop", settings)
+    curve = target_curve.build(paths, "hip-hop")
+    assert app.library_rows(paths)[0][:4] == ["hip-hop", "a", "yes", "good"]
+
+    weak = fixtures.write_wav(tmp_path / "weak.wav", fixtures.arranged_song(verse_db=-1.0)[0])
+    options = MasterOptions.from_settings(settings, "", mode="curve", genre="hip-hop")
+    result = pipeline.master(weak, options, paths, settings)
+
+    view = app.analysis_view(result, settings, paths)
+    spectrum_plot, band_plot, _, _, flags, song_md, low_md, markers, key = view
+    names = [trace.name for trace in spectrum_plot.data if trace.name]
+    assert "hip-hop curve (median)" in names and "hip-hop references (middle half)" in names
+    assert "genre curve" in band_plot.layout.title.text
+    assert "may not lift" in flags and "| hook 1 |" in song_md and "Hook minus verse" in song_md
+    assert "C2" in low_md and markers.startswith("0 intro") and key == "F minor"
+    assert charts.spectrum(result.reports, curve).data
+
+    sims = speakers.render(result, paths)
+    config = json.loads(player.config(result, sims=sims))
+    assert [s["label"] for s in config["sections"]][:3] == ["intro", "verse 1", "hook 1"]
+    assert config["sections"][2]["start"] == pytest.approx(20.6, abs=0.75)
+    assert {e["label"] for e in config["events"]} >= {"bass detuned", "weak hook contrast"}
+    assert [e["start"] for e in config["events"]] == sorted(e["start"] for e in config["events"])
+    labels = [s["label"] for s in config["sources"]]
+    assert labels[:3] == ["Mix", "Master", "Reference"] and "Sim: Phone speaker" in labels
+    assert json.loads(player.config(pipeline.analyze(weak, paths, settings)))["sections"]

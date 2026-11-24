@@ -14,3 +14,5 @@ class Flag:
     severity: Severity
     message: str
     value: float | None = None
+    start_s: float | None = None
+    end_s: float | None = None

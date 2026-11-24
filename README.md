@@ -6,11 +6,13 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phases 0 to 5 are done: mastering against a reference, processing chains with
-hosted VST3/AU plugins, stems with balance checks and rebalancing, batch/EP mode with a
-consistency report, AI mix notes, loudness, frequency balance and stereo analysis, streaming
-previews, a level-matched A/B/C player with blind tests, a progress view, the reference
-library and the watch folder. Phase 6 (deep analysis) is next.
+**Status:** Phases 0 to 6 are done: mastering against a reference or a genre target curve,
+processing chains with hosted VST3/AU plugins, stems, batch/EP mode, AI mix notes, and
+analysis of loudness, balance, stereo, key, tempo, song sections, the 808 and common mix
+problems, with streaming previews, speaker simulation, a level-matched A/B/C player with
+blind tests, a progress view, the reference library and the watch folder. Everything is
+tested on generated audio; none of it has met real music yet. Phase 7 (MCP server,
+alternate versions, habit detection) is next.
 
 ## Setup (macOS)
 
@@ -96,6 +98,45 @@ uv run masterbench stems import ~/Music/Bounces/song-stems --title "Song" --genr
 uv run masterbench rebalance song --gain lead-vox=+2 --gain drums=-1
 ```
 
+Build a genre's target curve from its references, then master toward it instead of
+toward one song:
+
+```bash
+uv run masterbench curve build hip-hop
+```
+
+```bash
+uv run masterbench master ~/Music/Bounces/song.wav --curve --genre hip-hop
+```
+
+Every analysis reports the key and tempo, the song's sections, out-of-tune 808 notes and
+moments worth a listen. To look closer, or to correct what was detected:
+
+```bash
+uv run masterbench sections RUN_ID
+```
+
+```bash
+uv run masterbench sections RUN_ID --set "0 intro, 0:14 verse, 0:41 hook, 1:08 verse"
+```
+
+```bash
+uv run masterbench key night-drive "F minor"
+```
+
+```bash
+uv run masterbench lowend RUN_ID
+```
+
+Hear a master as a phone, earbuds, a car, a laptop or a club system would roughly play it:
+
+```bash
+uv run masterbench speakers RUN_ID
+```
+
+`masterbench ref suggest song.wav --genre hip-hop` ranks your references by how close they
+sit to a mix; `masterbench ref list` shows each reference's quality badge.
+
 Master an EP the same way and check that the tracks sit together:
 
 ```bash
@@ -161,7 +202,8 @@ uv run python scripts/verify_stack.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright
 ```
 
-`pytest -m "not slow"` skips the test that drives the third-party libraries.
+The full suite takes about ten minutes. `pytest -m "not slow"` skips the test that drives the
+third-party libraries.
 `verify_stack.py` exercises every library on generated audio and downloads one separation
 model (about 65 MB) the first time.
 
@@ -173,14 +215,16 @@ src/masterbench/
   config.py         paths, targets, thresholds, settings.toml
   audio_io.py       load, save (TPDF dither), hashing
   validate.py       pre-flight checks on a mix
-  analysis/         loudness, spectrum, stereo, flags, AnalysisReport
-  master/           Matchering wrapper, chains and presets, true-peak limiter, pipeline
-  references/       genre reference library
+  analysis/         loudness, spectrum, stereo, key and tempo, sections, detectors,
+                    low end, flags, AnalysisReport
+  master/           Matchering wrapper, curve match, chains and presets, limiter, pipeline
+  references/       reference library, quality checks, suggestions, target curves
   projects.py       projects, runs, manifests
   db.py, index.py   SQLite migrations, indexing, reindex
   watch.py          watch folder
   stems/            separation, Logic stem import, balance, rebalance
-  preview/          codec round trips and platform normalization
+  preview/          codec round trips, platform normalization, speaker simulation
+  track.py          hand-set key and sections, low-end report
   batch.py          EP mode and consistency report
   notes/            AI mix notes: payload, prompt, API call
   progress.py       per-track trends, recurring flags, blind-test history

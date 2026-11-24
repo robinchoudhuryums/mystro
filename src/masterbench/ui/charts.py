@@ -8,6 +8,7 @@ from masterbench.analysis.compare import BAND_LABELS
 from masterbench.analysis.report import AnalysisReport
 from masterbench.config import BANDS
 from masterbench.progress import FlagCount, TrackPoint
+from masterbench.references.target_curve import TargetCurve
 
 ROLE_COLORS = {"mix": "#6b7280", "master": "#ea580c", "reference": "#2563eb"}
 _LAYOUT = {
@@ -24,12 +25,29 @@ def _empty(message: str) -> go.Figure:
     return figure
 
 
-def spectrum(reports: dict[str, AnalysisReport]) -> go.Figure:
-    """Smoothed spectra overlaid at equal loudness."""
+def spectrum(reports: dict[str, AnalysisReport], curve: TargetCurve | None = None) -> go.Figure:
+    """Smoothed spectra overlaid at equal loudness, over the genre curve's range if there is one."""
     shown = {role: r for role, r in reports.items() if r.spectrum is not None}
     if not shown:
         return _empty("This run was analyzed before spectra were stored. Analyze it again.")
     figure = go.Figure()
+    if curve is not None:
+        name = f"{curve.genre} references (middle half)"
+        figure.add_scatter(x=curve.freqs_hz, y=curve.p75_db, line={"width": 0}, showlegend=False)
+        figure.add_scatter(
+            x=curve.freqs_hz,
+            y=curve.p25_db,
+            line={"width": 0},
+            fill="tonexty",
+            fillcolor="rgba(22, 163, 74, 0.18)",
+            name=name,
+        )
+        figure.add_scatter(
+            x=curve.freqs_hz,
+            y=curve.median_db,
+            name=f"{curve.genre} curve (median)",
+            line={"color": "#16a34a", "width": 1.5, "dash": "dash"},
+        )
     for role, report in shown.items():
         assert report.spectrum is not None
         figure.add_scatter(
@@ -50,15 +68,19 @@ def spectrum(reports: dict[str, AnalysisReport]) -> go.Figure:
 
 
 def band_deltas(reports: dict[str, AnalysisReport], limit_db: float) -> go.Figure:
-    shown = {role: r for role, r in reports.items() if r.band_deltas}
+    """Band levels against the genre curve's median when there is one, else the reference."""
+    by_curve = any(r.curve_deltas for r in reports.values())
+    pick = (lambda r: r.curve_deltas) if by_curve else (lambda r: r.band_deltas)
+    shown = {role: pick(r) for role, r in reports.items() if pick(r)}
     if not shown:
         return _empty("No reference to compare against.")
+    against = "genre curve" if by_curve else "reference"
     figure = go.Figure()
-    for role, report in shown.items():
-        assert report.band_deltas is not None
+    for role, deltas in shown.items():
+        assert deltas is not None
         figure.add_bar(
-            x=[BAND_LABELS[name] for name in report.band_deltas],
-            y=list(report.band_deltas.values()),
+            x=[BAND_LABELS[name] for name in deltas],
+            y=list(deltas.values()),
             name=role.capitalize(),
             marker={"color": ROLE_COLORS.get(role)},
         )
@@ -66,7 +88,7 @@ def band_deltas(reports: dict[str, AnalysisReport], limit_db: float) -> go.Figur
         figure.add_hline(y=edge, line={"color": "#9ca3af", "width": 1, "dash": "dash"})
     figure.update_layout(
         **_LAYOUT,
-        title="Band level versus the reference (dB, equal loudness)",
+        title=f"Band level versus the {against} (dB, equal loudness)",
         yaxis={"title": "dB", "zeroline": True},
         barmode="group",
     )

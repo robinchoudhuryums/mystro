@@ -6,7 +6,10 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import numpy as np
+
 from masterbench import audio_io, projects
+from masterbench.analysis import detectors
 from masterbench.analysis.flags import Flag
 from masterbench.config import Paths, Settings
 from masterbench.master import pipeline
@@ -91,9 +94,24 @@ def diagnose(
         reference_mix, _ = audio_io.load(reference.path)
         theirs = stem_analysis.balance(reference_set, reference_mix)
         flags = stem_analysis.compare(mine, theirs, settings.thresholds)
+    flags += vocal_flags(stem_set, settings)
     diagnosis = Diagnosis(stem_set.name, mine, theirs, flags, stem_analysis.artifact_warning(mine))
     projects.write_json(stem_set.dir / "diagnosis.json", asdict(diagnosis))
     return diagnosis
+
+
+def vocal_flags(stem_set: StemSet, settings: Settings) -> list[Flag]:
+    """Sibilance and uneven phrases, measured on the vocal stem against everything else."""
+    names = stem_set.by_role("vocals")
+    if not names:
+        return []
+    vocal = np.sum([stem_set.load(name) for name in names], axis=0)
+    beat = separate.mixdown(stem_set) - vocal
+    rate, limits = stem_set.sample_rate, settings.thresholds
+    return [
+        *detectors.sibilance(vocal.mean(axis=1), rate, limits, is_vocal=True),
+        *detectors.vocal_consistency(vocal, beat, rate, limits),
+    ]
 
 
 def find_set(paths: Paths, track_slug: str, name: str | None = None) -> StemSet:

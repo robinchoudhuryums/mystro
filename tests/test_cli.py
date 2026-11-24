@@ -48,7 +48,8 @@ def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
     assert mastered.exit_code == 0, mastered.output
     rows = {line.split()[0]: line.split() for line in mastered.stdout.splitlines() if line.strip()}
     assert rows["Master"][1] == "-14.0" and rows["Mix"][1] == "-19.7"
-    assert "No flags." in mastered.stdout and "master_24.wav" in mastered.stdout
+    assert "35 cents sharp of C2" in mastered.stdout, "the loop's planted detuned 808 note"
+    assert "Key F minor" in mastered.stdout and "master_24.wav" in mastered.stdout
     assert len(list(data_root.glob("projects/loop/runs/*/master_16.wav"))) == 1
 
     louder = runner.invoke(app, ["master", str(fx["loop"]), "--lufs", "-11", "--ceiling", "-1.5"])
@@ -186,3 +187,73 @@ def test_batch_and_notes_payload_from_the_command_line(
     assert shown.exit_code == 0, shown.output
     assert '"intent": "Punchy."' in shown.stdout and "claude-sonnet-5-5" in shown.output
     assert runner.invoke(app, ["notes", "20260101-000000-abcdef", "--payload"]).exit_code == 1
+
+
+def test_deep_analysis_from_the_command_line(data_root: Path, tmp_path: Path) -> None:
+    from masterbench import fixtures
+
+    refs = {"a": -7.0, "b": -5.0}
+    for name, verse_db in refs.items():
+        song = fixtures.arranged_song(verse_db=verse_db, seed=ord(name))[0]
+        added = runner.invoke(
+            app,
+            [
+                "ref",
+                "add",
+                str(fixtures.write_wav(tmp_path / f"{name}.wav", song)),
+                "--genre",
+                "hip-hop",
+            ],
+        )
+        assert "quality: good" in added.stdout
+    listed = runner.invoke(app, ["ref", "list"])
+    assert "good" in listed.stdout and listed.stdout.startswith("* hip-hop/a")
+
+    built = runner.invoke(app, ["curve", "build", "hip-hop"])
+    assert built.exit_code == 0, built.output
+    assert "hip-hop: built from 2 references" in built.stdout and "Hook minus verse" in built.stdout
+    assert "sub" in runner.invoke(app, ["curve", "show", "hiphop"]).stdout
+    assert runner.invoke(app, ["curve", "show", "house"]).exit_code == 1
+    assert runner.invoke(app, ["curve", "build", "house"]).exit_code == 1
+
+    weak = fixtures.write_wav(tmp_path / "Weak Hook.wav", fixtures.arranged_song(verse_db=-1.0)[0])
+    suggested = runner.invoke(app, ["ref", "suggest", str(weak), "--genre", "hip-hop"])
+    assert suggested.exit_code == 0 and suggested.stdout.count("hip-hop/") == 2
+
+    mastered = runner.invoke(app, ["master", str(weak), "--curve", "--genre", "hip-hop"])
+    assert mastered.exit_code == 0, mastered.output
+    assert "Matching to the hip-hop curve" in mastered.output
+    assert (
+        "Key F minor" in mastered.stdout
+        and "Sections (auto): intro 0:00, verse 1" in mastered.stdout
+    )
+    assert "It may not lift when it arrives." in mastered.stdout
+    assert mastered.stdout.count("may not lift") == 1
+
+    run_id = next(data_root.glob("projects/weak-hook/runs/*/master_24.wav")).parent.name
+    shown = runner.invoke(app, ["sections", run_id])
+    assert (
+        "hook 1" in shown.stdout
+        and "Hook minus verse: 1." in shown.stdout
+        and "To edit: --set" in shown.stdout
+    )
+    saved = runner.invoke(app, ["sections", run_id, "--set", "0 intro, 6.9 verse, 20.6 hook"])
+    assert saved.stdout.startswith("Saved: 0 intro, 6.9 verse, 20.6 hook")
+    assert runner.invoke(app, ["sections", run_id, "--set", "5 solo"]).exit_code == 1
+    assert "cleared" in runner.invoke(app, ["sections", run_id, "--clear"]).stdout
+
+    assert "key set to F minor" in runner.invoke(app, ["key", "weak-hook", "f minor"]).stdout
+    assert runner.invoke(app, ["key", "weak-hook", "H minor"]).exit_code == 1
+    assert runner.invoke(app, ["key", "weak-hook"]).exit_code == 2
+    assert "key cleared" in runner.invoke(app, ["key", "weak-hook", "--clear"]).stdout
+
+    low = runner.invoke(app, ["lowend", run_id])
+    assert low.exit_code == 0, low.output
+    assert "C2" in low.stdout and "+35" in low.stdout and "35 cents sharp of C2" in low.stdout
+    assert "needs drum and bass stems" in low.stdout
+
+    sims = runner.invoke(app, ["speakers", run_id])
+    assert sims.exit_code == 0, sims.output
+    assert "Phone speaker: On this speaker the sub and bass are gone" in sims.stdout
+    assert "approximations" in sims.stdout
+    assert len(list(data_root.glob("projects/weak-hook/runs/*/previews/speaker_*.wav"))) == 6

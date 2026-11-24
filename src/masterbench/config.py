@@ -16,6 +16,9 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
+# Problem regions that do not line up with the named bands.
+REGIONS: dict[str, tuple[float, float]] = {"mud": (200.0, 500.0), "harsh": (2000.0, 5000.0)}
+
 DATA_ROOT_ENV = "MASTERBENCH_HOME"
 STATE_DIR_ENV = "MASTERBENCH_STATE"
 ICLOUD_DRIVE = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
@@ -58,6 +61,21 @@ class Thresholds:
     stem_balance_db: float = 2.0
     ep_loudness_lu: float = 0.7
     ep_band_db: float = 2.5
+    min_hook_contrast_lu: float = 1.5
+    hook_contrast_gap_lu: float = 1.0
+    sibilance_db: float = -6.0
+    resonance_db: float = 8.0
+    harsh_share: float = 0.5
+    region_excess_db: float = 2.5
+    vocal_jump_db: float = 4.0
+    bass_tune_cents: float = 15.0
+    bass_harmonics_db: float = -30.0
+    kick_clash_db: float = -6.0
+    small_speaker_hz: float = 150.0
+    curve_margin_db: float = 1.0
+    reference_min_s: float = 45.0
+    reference_low_crest_db: float = 6.0
+    lossy_cutoff_hz: float = 19500.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +85,8 @@ class Settings:
     notes_model: str = "claude-sonnet-5-5"
     notes_monthly_cap_usd: float = 5.0
     default_genre: str = "hip-hop"
+    tempo_low_bpm: float = 80.0
+    tempo_high_bpm: float = 160.0
     watch_auto_master: bool = False
     watch_stable_s: float = 2.0
     ui_port: int = 7860

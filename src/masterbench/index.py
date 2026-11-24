@@ -6,13 +6,14 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 from masterbench import blind, db, projects
 from masterbench.analysis.report import AnalysisReport
 from masterbench.config import Paths
 from masterbench.projects import RunManifest, Track
-from masterbench.references import library
+from masterbench.references import library, suggest
 
 
 @contextmanager
@@ -57,8 +58,8 @@ def _insert_analysis(
     cursor = conn.execute(
         "INSERT INTO analyses (run_id, source_path, role, sha256, sample_rate, channels, bit_depth,"
         " duration_s, lufs_i, lufs_s_max, lufs_m_max, true_peak_dbtp, sample_peak_dbfs, lra, plr,"
-        " crest_db, correlation, low_mono_corr, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " crest_db, correlation, low_mono_corr, key, key_confidence, tempo_bpm, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             report.source_path,
@@ -78,18 +79,39 @@ def _insert_analysis(
             loud.crest_db,
             report.stereo.correlation if report.stereo else None,
             report.stereo.low_mono_corr if report.stereo else None,
+            report.musical.key if report.musical else None,
+            report.musical.key_confidence if report.musical else None,
+            report.musical.tempo_bpm if report.musical else None,
             created_at,
         ),
     )
     analysis_id = cursor.lastrowid
     assert analysis_id is not None
     conn.executemany(
-        "INSERT INTO flags (analysis_id, code, severity, message, value) VALUES (?, ?, ?, ?, ?)",
-        [(analysis_id, f.code, f.severity, f.message, f.value) for f in report.flags],
+        "INSERT INTO flags (analysis_id, code, severity, message, value, start_s, end_s)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (analysis_id, f.code, f.severity, f.message, f.value, f.start_s, f.end_s)
+            for f in report.flags
+        ],
     )
     conn.executemany(
         "INSERT INTO band_deltas (analysis_id, band, delta_db, vs) VALUES (?, ?, ?, 'reference')",
         [(analysis_id, band, delta) for band, delta in (report.band_deltas or {}).items()],
+    )
+    conn.executemany(
+        "INSERT INTO band_deltas (analysis_id, band, delta_db, vs)"
+        " VALUES (?, ?, ?, 'target_curve')",
+        [(analysis_id, band, delta) for band, delta in (report.curve_deltas or {}).items()],
+    )
+    conn.executemany(
+        "INSERT INTO band_deltas (analysis_id, band, delta_db, vs, section)"
+        " VALUES (?, ?, ?, 'reference', ?)",
+        [
+            (analysis_id, band, delta, section.label)
+            for section in (report.sections.items if report.sections else [])
+            for band, delta in (section.band_deltas or {}).items()
+        ],
     )
     return analysis_id
 
@@ -138,9 +160,17 @@ def _sync_references(conn: sqlite3.Connection, paths: Paths) -> int:
     references = library.list_references(paths)
     for ref in references:
         conn.execute(
-            "INSERT INTO reference_tracks (genre, name, path, is_default, notes)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (ref.genre, ref.name, str(ref.path), int(ref.is_default), ref.notes),
+            "INSERT INTO reference_tracks (genre, name, path, is_default, notes, quality_json,"
+            " features_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                ref.genre,
+                ref.name,
+                str(ref.path),
+                int(ref.is_default),
+                ref.notes,
+                json.dumps(asdict(ref.quality), sort_keys=True) if ref.quality else "{}",
+                json.dumps(suggest.features(ref.report) or {}, sort_keys=True),
+            ),
         )
         _insert_analysis(conn, ref.report, None, ref.added_at or projects.now_iso())
     return len(references)

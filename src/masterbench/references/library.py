@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from masterbench import audio_io, projects
-from masterbench.analysis.report import AnalysisReport, analyze_file
+from masterbench.analysis.report import AnalysisReport, analyze_audio
 from masterbench.config import Paths, Settings
+from masterbench.references import quality as quality_check
+from masterbench.references.quality import Quality
 
 SIDECAR_SUFFIX = ".analysis.json"
 
@@ -28,14 +30,19 @@ class Reference:
     notes: str = ""
     added_at: str = ""
     is_default: bool = False
+    quality: Quality | None = None
 
     @property
     def spec(self) -> str:
         return f"{self.genre}/{self.name}" if self.genre else str(self.path)
 
 
-def _norm(text: str) -> str:
+def normalize(text: str) -> str:
+    """Genre and reference names compare without case, spaces or punctuation."""
     return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+_norm = normalize
 
 
 def _sidecar(path: Path) -> Path:
@@ -81,9 +88,35 @@ def list_references(paths: Paths, genre: str | None = None) -> list[Reference]:
                     notes=data.get("notes", ""),
                     added_at=data.get("added_at", ""),
                     is_default=defaults.get(name) == file.name,
+                    quality=Quality.from_dict(data["quality"]) if data.get("quality") else None,
                 )
             )
     return found
+
+
+def analyze(path: Path, settings: Settings) -> tuple[AnalysisReport, Quality]:
+    """Measure a reference file and judge whether it is fit to compare against."""
+    audio, info = audio_io.load(path)
+    report = analyze_audio(audio, info, path, "reference", settings)
+    assert report.stereo is not None
+    quality = quality_check.assess(audio, info, report.loudness, report.stereo, settings.thresholds)
+    return report, quality
+
+
+def refresh(paths: Paths, settings: Settings, genre: str | None = None) -> int:
+    """Re-analyze references whose cached analysis predates the current measurements."""
+    stale = [
+        ref
+        for ref in list_references(paths, genre)
+        if ref.quality is None or ref.report.sections is None or ref.report.regions is None
+    ]
+    for ref in stale:
+        report, quality = analyze(ref.path, settings)
+        data = json.loads(_sidecar(ref.path).read_text(encoding="utf-8"))
+        projects.write_json(
+            _sidecar(ref.path), {**data, "analysis": report.to_dict(), "quality": asdict(quality)}
+        )
+    return len(stale)
 
 
 def add(
@@ -104,8 +137,13 @@ def add(
         raise ReferenceError(f"a different reference named {source.name} already exists in {genre}")
     if not dest.exists():
         shutil.copy2(source, dest)
-    report = analyze_file(dest, "reference", settings)
-    sidecar = {"notes": notes, "added_at": projects.now_iso(), "analysis": report.to_dict()}
+    report, quality = analyze(dest, settings)
+    sidecar = {
+        "notes": notes,
+        "added_at": projects.now_iso(),
+        "analysis": report.to_dict(),
+        "quality": asdict(quality),
+    }
     projects.write_json(_sidecar(dest), sidecar)
     if make_default or genre not in _defaults(paths):
         set_default(paths, genre, dest.stem)
@@ -157,7 +195,8 @@ def resolve(paths: Paths, spec: str, settings: Settings) -> Reference:
     """Turn 'genre/default', 'genre/name' or a file path into a Reference."""
     file = Path(spec).expanduser()
     if file.is_file():
-        return Reference("", file.stem, file, analyze_file(file, "reference", settings))
+        report, quality = analyze(file, settings)
+        return Reference("", file.stem, file, report, quality=quality)
     genre, _, name = spec.partition("/")
     if not name:
         raise ReferenceError(f"reference must be 'genre/name', 'genre/default' or a file: {spec}")

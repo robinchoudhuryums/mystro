@@ -12,11 +12,13 @@ from typing import Annotated
 import typer
 
 from masterbench import audio_io, batch, config, fixtures, index, notify, projects, summary
+from masterbench import track as track_tools
+from masterbench.analysis.report import analyze_audio
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.notes import mix_notes
-from masterbench.preview import streaming
-from masterbench.references import library
+from masterbench.preview import speakers, streaming
+from masterbench.references import library, suggest, target_curve
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 
@@ -25,8 +27,10 @@ ref_app = typer.Typer(no_args_is_help=True, help="Manage the genre reference lib
 preset_app = typer.Typer(no_args_is_help=True, help="Manage chain presets.")
 app.add_typer(ref_app, name="ref")
 stems_app = typer.Typer(no_args_is_help=True, help="Work with stems.")
+curve_app = typer.Typer(no_args_is_help=True, help="Genre target curves built from references.")
 app.add_typer(preset_app, name="preset")
 app.add_typer(stems_app, name="stems")
+app.add_typer(curve_app, name="curve")
 
 AudioFile = Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]
 ENGINE_ERRORS = (
@@ -37,6 +41,7 @@ ENGINE_ERRORS = (
     chain.ChainError,
     stem_separation.StemError,
     mix_notes.NotesError,
+    track_tools.TrackError,
     LookupError,
 )
 
@@ -123,8 +128,12 @@ def master(
     notify_done: Annotated[
         bool, typer.Option("--notify", help="Show a macOS notification when finished.")
     ] = False,
+    curve: Annotated[
+        bool,
+        typer.Option("--curve", help="Match the genre's target curve instead of one reference."),
+    ] = False,
 ) -> None:
-    """Master a mix against a reference. Writes a new run and prints a summary."""
+    """Master a mix against a reference or a genre target curve. Writes a new run."""
     paths, settings = config.get_paths(), config.load_settings()
     paths.ensure()
     spec = ref or f"{genre or settings.default_genre}/default"
@@ -136,6 +145,7 @@ def master(
         title=title,
         pre_chain=pre,
         post_chain=post,
+        mode="curve" if curve else "matchering",
     )
     try:
         result = pipeline.master(mix, options, paths, settings, _progress)
@@ -267,17 +277,58 @@ def ref_add(
         index.sync_references(conn, paths)
     marker = " (default)" if ref.is_default else ""
     typer.echo(f"{ref.spec}{marker}: {ref.report.headline()}")
+    if ref.quality is not None:
+        typer.echo(f"quality: {ref.quality.badge}")
+        for issue in ref.quality.issues:
+            typer.echo(f"  {summary.flag_line(issue)}")
+        if not ref.quality.usable_for_curves:
+            typer.echo("  It is left out of target curves unless you include it by name.")
 
 
 @ref_app.command("list")
 def ref_list(genre: Annotated[str | None, typer.Option(help="Only this genre.")] = None) -> None:
-    """List references with their loudness."""
+    """List references with their loudness and quality badge."""
     refs = library.list_references(config.get_paths(), genre)
     if not refs:
         typer.echo("no references; add one with: masterbench ref add FILE --genre GENRE")
     for ref in refs:
         marker = "*" if ref.is_default else " "
-        typer.echo(f"{marker} {ref.spec:<40} {ref.report.headline()}")
+        badge = ref.quality.badge if ref.quality else "unchecked"
+        typer.echo(f"{marker} {ref.spec:<36} {badge:<9} {ref.report.headline()}")
+        for issue in ref.quality.issues if ref.quality else []:
+            typer.echo(f"    {summary.flag_line(issue)}")
+
+
+@ref_app.command("suggest")
+def ref_suggest(
+    mix: AudioFile,
+    genre: Annotated[
+        str | None, typer.Option(help="Genre to search; default: your default.")
+    ] = None,
+) -> None:
+    """Rank a genre's references by how close they sit to a mix."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        audio, info = audio_io.load(mix)
+        report = analyze_audio(audio, info, mix, "reference", settings)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    wanted = genre or settings.default_genre
+    found = suggest.suggest(report, library.list_references(paths, wanted))
+    if not found:
+        typer.echo(f"no references in '{wanted}' to compare with")
+    for item in found:
+        typer.echo(f"{item.reference.spec:<36} {item.similarity:+.2f}  {item.why}")
+
+
+@ref_app.command("refresh")
+def ref_refresh() -> None:
+    """Re-analyze references added before the current measurements existed."""
+    paths, settings = config.get_paths(), config.load_settings()
+    count = library.refresh(paths, settings)
+    with index.open_index(paths) as conn:
+        index.sync_references(conn, paths)
+    typer.echo(f"{count} reference(s) re-analyzed")
 
 
 @ref_app.command("default")
@@ -563,3 +614,129 @@ def notes(
     with index.open_index(paths) as conn:
         index.sync_notes(conn, paths)
     typer.echo(mix_notes.render(result))
+
+
+@curve_app.command("build")
+def curve_build(
+    genre: str,
+    ref: Annotated[
+        list[str] | None, typer.Option("--ref", help="Use only these references (repeatable).")
+    ] = None,
+    include_low_quality: Annotated[
+        bool, typer.Option("--include-low-quality", help="Also use references badged poor.")
+    ] = False,
+) -> None:
+    """Build a genre's target curve: the median spectrum of its references and their range."""
+    paths = config.get_paths()
+    try:
+        curve = target_curve.build(paths, genre, ref, include_low_quality)
+    except (target_curve.CurveError, library.ReferenceError) as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"{curve.genre}: built from {len(curve.references)} references")
+    typer.echo(", ".join(curve.references))
+    _print_curve(curve)
+
+
+def _print_curve(curve: target_curve.TargetCurve) -> None:
+    typer.echo(f"{'Band':<12} {'25%':>7} {'Median':>7} {'75%':>7}   (dB relative to loudness)")
+    for band, value in curve.bands.items():
+        typer.echo(f"{band:<12} {value.p25:>7.1f} {value.median:>7.1f} {value.p75:>7.1f}")
+    if curve.contrast_lu is not None:
+        typer.echo(f"Hook minus verse in these references: {curve.contrast_lu:.1f} LU (median)")
+
+
+@curve_app.command("show")
+def curve_show(genre: str) -> None:
+    """Print a genre's target curve."""
+    try:
+        curve = target_curve.get(config.get_paths(), genre)
+    except target_curve.CurveError as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"{curve.genre}: {len(curve.references)} references, built {curve.created_at[:10]}")
+    typer.echo(", ".join(curve.references))
+    _print_curve(curve)
+
+
+@app.command()
+def sections(
+    run_id: Annotated[str, typer.Argument(help="Id of a run of the track.")],
+    markers: Annotated[
+        str | None,
+        typer.Option("--set", help="Hand-set sections, e.g. '0 intro, 0:14 verse, 0:41 hook'."),
+    ] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Go back to automatic sections.")] = False,
+) -> None:
+    """Show a run's sections, or set the track's sections by hand for later analyses."""
+    paths = config.get_paths()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        if clear:
+            track_tools.clear_sections(run)
+            typer.echo("Hand-set sections cleared; the next analysis detects them again.")
+            return
+        if markers is not None:
+            found = track_tools.set_sections(run, markers)
+            typer.echo(f"Saved: {track_tools.markers_text(found)}")
+            typer.echo("They apply the next time this track is analyzed or mastered.")
+            return
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.sections_text(run.reports["mix"]))
+    if run.reports["mix"].sections is not None:
+        typer.echo(f"\nTo edit: --set '{track_tools.markers_text(run.reports['mix'].sections)}'")
+
+
+@app.command()
+def key(
+    track: Annotated[str, typer.Argument(help="Track slug, e.g. night-drive.")],
+    value: Annotated[str | None, typer.Argument(help="E.g. 'F minor'. Omit with --clear.")] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Go back to the detected key.")] = False,
+) -> None:
+    """Set a track's key by hand, for when detection picks the relative major or minor."""
+    if value is None and not clear:
+        raise typer.BadParameter("give a key such as 'F minor', or --clear")
+    try:
+        saved = track_tools.set_key(config.get_paths(), track, None if clear else value)
+    except track_tools.TrackError as exc:
+        raise _fail(exc) from exc
+    typer.echo(
+        f"{track}: key {'set to ' + saved if saved else 'cleared'}; applies from the next analysis"
+    )
+
+
+@app.command()
+def lowend(run_id: Annotated[str, typer.Argument(help="Id of a run of the track.")]) -> None:
+    """808 tuning against the key, what carries on small speakers, and the kick/808 clash."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        found = track_tools.low_end(run, paths, settings)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    mix = run.reports["mix"]
+    if mix.musical is not None:
+        typer.echo(summary.musical_line(mix))
+        typer.echo("")
+    typer.echo(summary.lowend_text(found))
+    from masterbench.analysis import lowend as lowend_tools
+
+    for flag in lowend_tools.flags(found, settings.thresholds):
+        typer.echo(summary.flag_line(flag))
+
+
+@app.command(name="speakers")
+def speakers_command(
+    run_id: Annotated[str, typer.Argument(help="Id of the run to render.")],
+    force: Annotated[bool, typer.Option("--force", help="Render again even if cached.")] = False,
+) -> None:
+    """Render phone, earbud, car, laptop, club and mono simulations of a run."""
+    paths = config.get_paths()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        previews = speakers.render(run, paths, force)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    for item in previews:
+        typer.echo(f"{item.label}: {item.message}")
+        typer.echo(f"  {run.run_dir / item.file}")
+    typer.echo(speakers.NOTICE)

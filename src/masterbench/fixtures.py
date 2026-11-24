@@ -257,6 +257,42 @@ def song_stems(
     return {name: stem * scale for name, stem in stems.items()}, mix * scale
 
 
+@dataclass(frozen=True)
+class SectionTruth:
+    label: str
+    start_s: float
+    end_s: float
+
+
+def arranged_song(
+    sr: int = SR, verse_db: float = -6.0, peak_dbfs: float = -3.0, seed: int = 1
+) -> tuple[np.ndarray, list[SectionTruth]]:
+    """A 40-bar song from the loop: intro, verse, hook, verse, hook, outro.
+
+    Intro and outro are the pad alone (4 bars each). Verses are drums and 808 at verse_db;
+    hooks are everything at full level, so the hook-to-verse contrast is set by verse_db.
+    """
+    parts, truth = _loop_parts(sr, 140.0, seed, 0.12, 0.8, True)
+    bars8 = len(parts["drums"])
+    bars4 = bars8 // 2
+    rhythm = parts["drums"] + parts["bass"]
+    blocks = [
+        ("intro", 0.5 * parts["other"][:bars4]),
+        ("verse", db_to_lin(verse_db) * rhythm),
+        ("hook", rhythm + parts["other"]),
+        ("verse", db_to_lin(verse_db) * rhythm),
+        ("hook", rhythm + parts["other"]),
+        ("outro", 0.5 * parts["other"][:bars4]),
+    ]
+    sections, start = [], 0
+    for label, block in blocks:
+        sections.append(SectionTruth(label, start / sr, (start + len(block)) / sr))
+        start += len(block)
+    audio = np.concatenate([block for _, block in blocks])
+    assert truth.tempo_bpm == 140.0
+    return _normalize_peak(audio, peak_dbfs), sections
+
+
 def reference_master(sr: int = SR) -> np.ndarray:
     """A louder, brighter, bass-heavier take on the loop, standing in for a commercial master."""
     audio, _ = drum_808_loop(sr=sr, seed=7, hat_gain=0.25, bass_gain=1.1, detune=False)
@@ -313,6 +349,26 @@ def synthetic_vocal(
         shaped += level * _butter(out, 1, band, "bandpass", sr)
     truth = VocalTruth(_LOOP_KEY, vibrato_hz, vibrato_cents, notes, off_cents)
     return _normalize_peak(shaped, peak_dbfs), truth
+
+
+def sibilant_vocal(
+    sr: int = SR, burst_db: float = 0.0, burst_s: float = 0.12
+) -> tuple[np.ndarray, list[float]]:
+    """The synthetic vocal with a burst of 5-10 kHz noise ("s") just before notes 2, 4 and 7.
+
+    burst_db sets the bursts' RMS relative to the vocal's. Returns the audio and burst times.
+    """
+    vocal, truth = synthetic_vocal(sr=sr)
+    rng = np.random.default_rng(11)
+    rms = float(np.sqrt(np.mean(vocal**2)))
+    times = [truth.notes[i].start_s - burst_s - 0.01 for i in (1, 3, 6)]
+    out = vocal.copy()
+    for start in times:
+        noise = _butter(rng.standard_normal(int(burst_s * sr)), 4, [5000, 10000], "bandpass", sr)
+        noise *= np.hanning(len(noise)) ** 0.25
+        noise *= rms * db_to_lin(burst_db) / float(np.sqrt(np.mean(noise**2)))
+        _place(out, start, noise, sr)
+    return out, [round(t, 3) for t in times]
 
 
 def write_wav(path: Path, audio: np.ndarray, sr: int = SR, subtype: str = "PCM_24") -> Path:

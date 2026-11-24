@@ -302,3 +302,23 @@ def test_find_set_prefers_real_stems_and_explains_misses(
     assert workflow.find_set(paths, "night-drive", separated.name) == separated
     with pytest.raises(StemError, match="no stem set 'nope'"):
         workflow.find_set(paths, "night-drive", "nope")
+
+
+def test_vocal_stem_is_checked_for_sibilance_and_uneven_phrases(
+    paths: Paths, settings: Settings, tmp_path: Path
+) -> None:
+    stems, _ = fixtures.song_stems()
+    hissy, _ = fixtures.sibilant_vocal()
+    frames = len(stems["vocals"])
+    take = np.tile(hissy, frames // len(hissy) + 1)[:frames]
+    level = float(np.sqrt(np.mean(stems["vocals"] ** 2)) / np.sqrt(np.mean(take**2)))
+    vocal = np.repeat((level * take)[:, None], 2, axis=1)
+    vocal[9 * fixtures.SR : 11 * fixtures.SR] *= 10 ** (-9 / 20)
+    for role, audio in {**stems, "vocals": vocal}.items():
+        fixtures.write_wav(tmp_path / "stems" / FILE_NAMES[role], audio)
+    project, stem_set = workflow.import_logic_stems(paths, tmp_path / "stems", "Hissy")
+    flags = workflow.diagnose(stem_set, project.input_path, settings).flags
+    codes = [f.code for f in flags]
+    assert "sibilance" in codes and codes.count("sibilance_at") >= 3
+    quiet = next(f for f in flags if f.code == "vocal_phrase_quiet")
+    assert quiet.start_s == pytest.approx(9.0, abs=0.6)

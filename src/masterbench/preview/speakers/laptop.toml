@@ -1,0 +1,21 @@
+label = "Laptop"
+description = "Little below 180 Hz, a boxy midrange and a narrow image."
+width = 0.5
+
+[[module]]
+type = "highpass"
+cutoff_hz = 180.0
+
+[[module]]
+type = "highpass"
+cutoff_hz = 180.0
+
+[[module]]
+type = "highpass"
+cutoff_hz = 180.0
+
+[[module]]
+type = "peak"
+freq_hz = 1200.0
+gain_db = 3.0
+q = 1.0

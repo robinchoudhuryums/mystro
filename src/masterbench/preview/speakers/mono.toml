@@ -1,0 +1,3 @@
+label = "Mono"
+description = "Left and right summed, as on a single speaker."
+mono = true
