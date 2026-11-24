@@ -29,8 +29,15 @@ uv sync
 uv run masterbench init
 ```
 
-`init` creates `~/MasterBench` and the SQLite index. Set `MASTERBENCH_HOME` to put the data
-somewhere else.
+`init` creates `~/MasterBench` and the SQLite index. To keep the data in iCloud Drive instead:
+
+```bash
+uv run masterbench init --icloud
+```
+
+`--home PATH` puts it anywhere else. With a synced folder the index stays on the Mac (in
+`~/Library/Application Support/MasterBench`) and is rebuilt from the files when missing.
+In Finder, set the MasterBench folder to "Keep Downloaded" so audio is always on disk.
 
 ## Use
 

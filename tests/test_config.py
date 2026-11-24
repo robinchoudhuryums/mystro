@@ -52,3 +52,27 @@ def test_bands_are_contiguous() -> None:
     edges = list(config.BANDS.values())
     assert edges[0][0] == 20.0 and edges[-1][1] == 20000.0
     assert all(a[1] == b[0] for a, b in itertools.pairwise(edges))
+
+
+def test_data_root_precedence(tmp_path: Path, isolated_state: Path, monkeypatch) -> None:
+    assert config.data_root() == Path.home() / "MasterBench"
+    chosen = config.set_data_root(tmp_path / "elsewhere")
+    assert config.data_root() == chosen == tmp_path / "elsewhere"
+    assert (isolated_state / "home").read_text().strip() == str(chosen)
+    monkeypatch.setenv("MASTERBENCH_HOME", str(tmp_path / "env"))
+    assert config.data_root() == tmp_path / "env", "the environment variable wins"
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["Library/Mobile Documents/com~apple~CloudDocs/MasterBench", "Library/CloudStorage/Dropbox/MB"],
+)
+def test_index_stays_local_when_the_data_root_is_synced(
+    tmp_path: Path, isolated_state: Path, folder: str
+) -> None:
+    synced = config.Paths(tmp_path / folder)
+    assert synced.synced and synced.db.parent == isolated_state
+    assert synced.db != config.Paths(tmp_path / folder / "other").db, "one index per data root"
+    assert synced.references == tmp_path / folder / "references", "audio still syncs"
+    local = config.Paths(tmp_path / "MasterBench")
+    assert not local.synced and local.db == tmp_path / "MasterBench" / "masterbench.db"

@@ -108,3 +108,24 @@ def test_presets_and_chains_from_the_command_line(data_root: Path, fx: dict[str,
     broken = runner.invoke(app, ["master", str(fx["loop"]), "--post", "nope"])
     assert broken.exit_code == 1 and "no chain preset named 'nope'" in broken.output
     assert runner.invoke(app, ["plugins"]).exit_code == 0
+
+
+def test_init_home_is_remembered_and_a_new_index_fills_itself(
+    tmp_path: Path, fx: dict[str, Path]
+) -> None:
+    synced = tmp_path / "Mobile Documents" / "com~apple~CloudDocs" / "MasterBench"
+    first = runner.invoke(app, ["init", "--home", str(synced)])
+    assert first.exit_code == 0, first.output
+    assert "index is kept on this machine only" in first.stdout
+    assert not list(synced.glob("*.db*")), "no database inside the synced folder"
+
+    analyzed = runner.invoke(app, ["analyze", str(fx["loop"])])
+    assert analyzed.exit_code == 0 and list(synced.glob("projects/loop/runs/*/run.json"))
+
+    for database in (tmp_path / "state").glob("index-*.db*"):
+        database.unlink()
+    again = runner.invoke(app, ["init"])
+    assert "1 runs indexed" in again.stdout, "a missing index is rebuilt from the files"
+    assert runner.invoke(app, ["init", "--icloud"]).exit_code == 1, (
+        "no iCloud Drive in the test home"
+    )

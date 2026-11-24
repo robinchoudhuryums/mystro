@@ -190,7 +190,7 @@ tests/                 ✓ fixtures are generated per test session, never Robin'
 
 ### Data layout (outside the repo)
 
-The root is `~/MasterBench`, or `$MASTERBENCH_HOME` when set.
+The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench init --home PATH` (or `--icloud`), else `~/MasterBench`. When the root is in a synced folder, `masterbench.db` lives in the local state folder instead.
 
 ```
 ~/MasterBench/
@@ -549,13 +549,24 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Spotify normalization details** change; verify against Spotify's current documentation.
 - **Codec availability** in the Homebrew ffmpeg build (libvorbis/libopus/AAC). Ubuntu's build has all three; the Mac is unchecked.
 - **Final limiter** *[P0]*: Pedalboard's `Limiter` overshoots the ceiling, so the true-peak guarantee is ours to build (5.2).
-- **Open questions for Robin** (asked 2026-11-24, unanswered so far):
-  1. Apple Silicon chip and RAM?
-  2. Which third-party plugins does he own that he'd want in chains?
-  3. Default loudness target per genre: −14 for everything, or allow louder hip-hop/house presets (e.g. −9 to −11 LUFS) with a "Spotify will turn this down" note?
-  4. Where should `~/MasterBench` live (iCloud-synced or not)? Where does Logic bounce to by default (for the watch folder)?
+- **Robin's answers (2026-11-24):**
+  1. MacBook Pro, M2, 16 or 32 GB RAM (to be confirmed).
+  2. Plugins: many purchased third-party plugins used in Logic. These are the ones to host
+     (their AU or VST3 builds). Logic's stock plugins cannot be loaded outside Logic. Which
+     of them load headless is found by running `masterbench plugins` on the Mac.
+  3. Loudness: left to our recommendation, with Spotify as the goal. **Decided: −14 LUFS and
+     −1.0 dBTP for every genre.** Spotify turns louder masters down to −14, so extra loudness
+     only costs dynamics there. `--lufs` stays available for comparing a louder version in
+     the blind player.
+  4. Data location: iCloud preferred. **Decided:** `masterbench init --icloud` puts the data
+     root in iCloud Drive and keeps the SQLite index in `~/Library/Application Support/
+     MasterBench` (a database inside a synced folder gets corrupted). Logic can bounce
+     straight into `<data root>/Inbox/<genre>/`. Absolute paths in manifests assume one Mac.
   5. ~~Natural vs hard-tune?~~ **Decided: both, with Natural as the default** (5.23).
-  6. Which Waves tuner does he have (Tune LT vs Tune Real-Time)? Does he own a de-esser or vocal compressor plugin he'd like in the vocal chain?
+  6. Tuner: **Waves Tune LT**. It is a graphical tuner that needs its editor, so it cannot be
+     hosted headless; the Phase 8 comparison uses a Waves-tuned vocal exported from Logic.
+     Still unanswered: a de-esser or vocal compressor plugin for the vocal chain (ask at
+     Phase 9).
 
 ## 10. Working agreement
 1. Proceed phase by phase, committing at each phase's acceptance criteria and summarizing what changed.

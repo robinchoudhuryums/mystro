@@ -1,14 +1,25 @@
-"""Paths, defaults and targets. User overrides live in <data root>/settings.toml."""
+"""Paths, defaults and targets. User overrides live in <data root>/settings.toml.
+
+The data root holds audio, runs and presets and may live in a synced folder such as iCloud
+Drive. The SQLite index must not: sync services copy database files mid-write and corrupt
+them. For a synced root the index goes to a local state folder instead; it is rebuilt from
+the files on disk whenever it is missing.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
 DATA_ROOT_ENV = "MASTERBENCH_HOME"
+STATE_DIR_ENV = "MASTERBENCH_STATE"
+ICLOUD_DRIVE = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+_SYNCED_FOLDERS = ("Mobile Documents", "CloudStorage", "Dropbox", "OneDrive", "Google Drive")
 DEFAULT_GENRES = ("hip-hop", "house", "electronic")
 
 # Named bands for frequency-balance deltas (Hz, low inclusive, high exclusive).
@@ -69,8 +80,16 @@ class Paths:
         return self.root / "settings.toml"
 
     @property
+    def synced(self) -> bool:
+        """True when the data root sits inside a cloud-synced folder."""
+        return any(part in _SYNCED_FOLDERS for part in self.root.expanduser().absolute().parts)
+
+    @property
     def db(self) -> Path:
-        return self.root / "masterbench.db"
+        if not self.synced:
+            return self.root / "masterbench.db"
+        tag = hashlib.sha256(str(self.root.expanduser().absolute()).encode()).hexdigest()[:8]
+        return state_dir() / f"index-{tag}.db"
 
     @property
     def inbox(self) -> Path:
@@ -106,9 +125,39 @@ class Paths:
             (self.references / genre).mkdir(exist_ok=True)
 
 
+def state_dir() -> Path:
+    """Local, never-synced folder for the data-root pointer and, when needed, the index."""
+    override = os.environ.get(STATE_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "MasterBench"
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "state") / "masterbench"
+
+
+def _pointer() -> Path:
+    return state_dir() / "home"
+
+
+def set_data_root(root: Path) -> Path:
+    """Remember where the data root is, for every later command and the UI."""
+    root = root.expanduser().absolute()
+    _pointer().parent.mkdir(parents=True, exist_ok=True)
+    _pointer().write_text(f"{root}\n", encoding="utf-8")
+    return root
+
+
 def data_root() -> Path:
+    """$MASTERBENCH_HOME, else the root saved by `masterbench init --home`, else ~/MasterBench."""
     override = os.environ.get(DATA_ROOT_ENV)
-    return Path(override).expanduser() if override else Path.home() / "MasterBench"
+    if override:
+        return Path(override).expanduser()
+    if _pointer().is_file():
+        saved = _pointer().read_text(encoding="utf-8").strip()
+        if saved:
+            return Path(saved)
+    return Path.home() / "MasterBench"
 
 
 def get_paths() -> Paths:

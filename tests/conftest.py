@@ -22,6 +22,16 @@ def truth(fx: dict[str, Path]) -> dict:
     return json.loads(fx["truth"].read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Tests never read or write the real machine's state folder or data root pointer."""
+    state = tmp_path / "state"
+    monkeypatch.setenv("MASTERBENCH_STATE", str(state))
+    monkeypatch.delenv("MASTERBENCH_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    return state
+
+
 @pytest.fixture
 def data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "MasterBench"

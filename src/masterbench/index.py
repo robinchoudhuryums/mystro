@@ -17,9 +17,13 @@ from masterbench.references import library
 
 @contextmanager
 def open_index(paths: Paths) -> Iterator[sqlite3.Connection]:
+    """Open the index, creating it if needed. A brand-new index is filled from disk, so a
+    deleted database, or a synced data root opened on another machine, heals itself."""
     conn = db.connect(paths.db)
     try:
-        db.migrate(conn)
+        created = any(migration.version == 1 for migration in db.migrate(conn))
+        if created and paths.projects.is_dir():
+            reindex(conn, paths)
         yield conn
     finally:
         conn.close()

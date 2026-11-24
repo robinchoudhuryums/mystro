@@ -53,14 +53,36 @@ def version() -> None:
 
 
 @app.command()
-def init() -> None:
+def init(
+    home: Annotated[
+        Path | None, typer.Option(help="Put the data root here and remember it.")
+    ] = None,
+    icloud: Annotated[
+        bool, typer.Option("--icloud", help="Put the data root in iCloud Drive/MasterBench.")
+    ] = False,
+) -> None:
     """Create the data folders and bring the index database up to date."""
+    if icloud:
+        if not config.ICLOUD_DRIVE.is_dir():
+            raise _fail(
+                RuntimeError(f"iCloud Drive is not set up on this Mac ({config.ICLOUD_DRIVE})")
+            )
+        home = config.ICLOUD_DRIVE / "MasterBench"
+    if home is not None:
+        config.set_data_root(home)
     paths = config.get_paths()
     paths.ensure()
     with index.open_index(paths) as conn:
         versions = conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
+        runs = conn.execute("SELECT count(*) FROM runs").fetchone()[0]
     typer.echo(f"data root: {paths.root}")
-    typer.echo(f"database: {paths.db} (schema version {versions})")
+    typer.echo(f"database: {paths.db} (schema version {versions}, {runs} runs indexed)")
+    if paths.synced:
+        typer.echo(
+            "The data root is in a synced folder, so the index is kept on this machine only.\n"
+            "Keep the folder downloaded (Finder: right-click > Keep Downloaded), or audio that "
+            "iCloud has moved off this Mac will have to download before it can be read."
+        )
 
 
 @app.command(name="fixtures")
