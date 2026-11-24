@@ -6,12 +6,13 @@ from pathlib import Path
 
 import gradio as gr
 
-from masterbench import audio_io, index, progress, projects, summary
+from masterbench import audio_io, batch, index, progress, projects, summary
 from masterbench.analysis.compare import BAND_LABELS
 from masterbench.config import Paths, Settings
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
+from masterbench.notes import mix_notes
 from masterbench.preview import streaming
 from masterbench.preview.streaming import StreamingPreview
 from masterbench.references import library
@@ -31,6 +32,7 @@ ENGINE_ERRORS = (
     streaming.PreviewError,
     chain.ChainError,
     stem_separation.StemError,
+    mix_notes.NotesError,
     LookupError,
 )
 NO_REFERENCES = (
@@ -244,6 +246,20 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             loudness_plot = gr.Plot()
             stereo_md = gr.Markdown()
             an_flags = gr.Markdown()
+            with gr.Accordion("AI mix notes (optional; sends numbers, never audio)", open=False):
+                with gr.Row():
+                    notes_intent = gr.Textbox(
+                        label="What were you going for? (optional)", scale=3, lines=2
+                    )
+                    notes_model = gr.Dropdown(
+                        label="Model", choices=list(mix_notes.PRICES), value=settings.notes_model
+                    )
+                with gr.Row():
+                    notes_preview = gr.Button("Show what gets sent")
+                    notes_send = gr.Button("Get AI mix notes", variant="primary")
+                notes_quote = gr.Markdown()
+                notes_payload = gr.Code(label="Exactly what is sent", language="json", lines=12)
+                notes_md = gr.Markdown()
         with gr.Tab("Stems") as stems_tab:
             with gr.Row():
                 st_run = gr.Dropdown(label="Run", choices=run_choices(paths), value=None, scale=2)
@@ -279,6 +295,17 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             )
             st_master = gr.Button("Rebalance and master")
             st_result = gr.Markdown()
+        with gr.Tab("Batch"):
+            gr.Markdown(
+                "Master a whole EP the same way. Uses the reference, targets and chains chosen "
+                "on the Master tab, then checks that the tracks sit together."
+            )
+            batch_files = gr.File(
+                label="Mixes", file_count="multiple", file_types=UPLOAD_TYPES, type="filepath"
+            )
+            batch_name = gr.Textbox(label="Name of the set (optional)")
+            batch_run = gr.Button("Master the set", variant="primary")
+            batch_md = gr.Markdown()
         with gr.Tab("Progress") as progress_tab:
             trend_plot = gr.Plot()
             loudness_trend_plot = gr.Plot()
@@ -615,7 +642,87 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             notes.append("Open the new run in Compare to hear it against the original master.")
             return "\n".join(notes)
 
+        def notes_quote_text(quote: mix_notes.Estimate) -> str:
+            text = (
+                f"{quote.model}: about {quote.input_tokens} tokens in, roughly "
+                f"**${quote.cost_usd:.3f}**. Spent this month: ${quote.spent_this_month_usd:.2f} "
+                f"of ${quote.cap_usd:.2f}. API key: {mix_notes.key_status()}."
+            )
+            return text + (" **This would pass the cap.**" if quote.over_cap else "")
+
+        def on_notes_preview(run_id: str | None, intent: str, model: str):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            payload = mix_notes.build_payload(result, intent or "")
+            try:
+                quote = mix_notes.estimate(payload, model, paths, settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return notes_quote_text(quote), mix_notes.payload_json(payload)
+
+        def on_notes_send(run_id: str | None, intent: str, model: str):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            try:
+                written = mix_notes.generate(result, paths, settings, intent or "", model)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            with index.open_index(paths) as conn:
+                index.sync_notes(conn, paths)
+            payload = mix_notes.build_payload(result, intent or "")
+            return mix_notes.render(written), mix_notes.payload_json(payload)
+
+        def on_notes_run(run_id: str | None):
+            result = load(run_id)
+            stored = mix_notes.load(result) if result else None
+            return mix_notes.render(stored) if stored else ""
+
+        def on_batch(
+            files, name, selected_genre, spec, lufs, peak, pre, post, progress=gr.Progress()
+        ):
+            if not files:
+                raise gr.Error("Add at least two mixes.")
+            if not spec:
+                raise gr.Error("Add a reference in the Library tab first.")
+            options = MasterOptions(
+                spec,
+                lufs,
+                peak,
+                genre=selected_genre,
+                pre_chain=pre or None,
+                post_chain=post or None,
+            )
+            done = batch.run_batch(
+                [Path(f) for f in files],
+                options,
+                paths,
+                settings,
+                (name or "").strip(),
+                progress=lambda stage, fraction: progress(fraction, desc=stage),
+            )
+            return summary.batch_markdown(done)
+
         genre.change(on_genre, genre, reference)
+        notes_preview.click(
+            on_notes_preview, [an_run, notes_intent, notes_model], [notes_quote, notes_payload]
+        )
+        notes_send.click(
+            on_notes_send, [an_run, notes_intent, notes_model], [notes_md, notes_payload]
+        )
+        an_run.change(on_notes_run, an_run, notes_md)
+        batch_inputs = [
+            batch_files,
+            batch_name,
+            genre,
+            reference,
+            target,
+            ceiling,
+            pre_chain,
+            post_chain,
+        ]
+        batch_run.click(on_batch, batch_inputs, batch_md)
         st_view = [st_report, st_gains, st_result]
         st_run.change(on_stems_run, st_run, st_set)
         st_set.change(on_stem_set, [st_run, st_set, st_compare], st_view)

@@ -6,11 +6,11 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phases 0 to 4 are done: mastering against a reference, processing chains with
-hosted VST3/AU plugins, stems (separated or exported from Logic) with balance checks and
-rebalancing, loudness, frequency balance and stereo analysis, streaming previews, a
-level-matched A/B/C player with blind tests, a progress view, the reference library and
-the watch folder. Phase 5 (batch, AI notes, Quick Action) is next.
+**Status:** Phases 0 to 5 are done: mastering against a reference, processing chains with
+hosted VST3/AU plugins, stems with balance checks and rebalancing, batch/EP mode with a
+consistency report, AI mix notes, loudness, frequency balance and stereo analysis, streaming
+previews, a level-matched A/B/C player with blind tests, a progress view, the reference
+library and the watch folder. Phase 6 (deep analysis) is next.
 
 ## Setup (macOS)
 
@@ -96,6 +96,29 @@ uv run masterbench stems import ~/Music/Bounces/song-stems --title "Song" --genr
 uv run masterbench rebalance song --gain lead-vox=+2 --gain drums=-1
 ```
 
+Master an EP the same way and check that the tracks sit together:
+
+```bash
+uv run masterbench batch ~/Music/Bounces/EP/*.wav --genre hip-hop --name "My EP"
+```
+
+Ask Claude for mix notes on a run. Only measurements are sent, never audio; `--payload`
+prints exactly what would go out, with a cost estimate, and sends nothing.
+
+```bash
+uv run masterbench notes 20261124-185126-7f55cf --payload
+```
+
+```bash
+uv run masterbench notes 20261124-185126-7f55cf --intent "Dark and heavy, vocal up front"
+```
+
+The key is read from `ANTHROPIC_API_KEY`, or from the macOS Keychain if you store it there:
+
+```bash
+security add-generic-password -s masterbench-anthropic -a anthropic -w
+```
+
 See what the codecs and Spotify's normalization do to a master:
 
 ```bash
@@ -158,12 +181,16 @@ src/masterbench/
   watch.py          watch folder
   stems/            separation, Logic stem import, balance, rebalance
   preview/          codec round trips and platform normalization
+  batch.py          EP mode and consistency report
+  notes/            AI mix notes: payload, prompt, API call
   progress.py       per-track trends, recurring flags, blind-test history
   ui/               Gradio app, charts, Web Audio A/B/C player
   fixtures.py       synthetic test audio with known ground truth
   migrations/       numbered SQL files, applied in order
 scripts/verify_stack.py   Phase 0 verification spike
 scripts/check_player.js   browser check of the A/B/C player
+quick_action/             Finder Quick Action script and install steps
+.claude/commands/         cycle workflow slash commands (from claude-workflow-tools)
 tests/                    generated fixtures only; no audio is committed
 ```
 

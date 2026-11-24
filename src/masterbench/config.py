@@ -56,6 +56,8 @@ class Thresholds:
     low_end_mono_corr: float = 0.9
     codec_peak_dbtp: float = -1.0
     stem_balance_db: float = 2.0
+    ep_loudness_lu: float = 0.7
+    ep_band_db: float = 2.5
 
 
 @dataclass(frozen=True)

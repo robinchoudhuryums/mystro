@@ -11,9 +11,10 @@ from typing import Annotated
 
 import typer
 
-from masterbench import audio_io, config, fixtures, index, projects, summary
+from masterbench import audio_io, batch, config, fixtures, index, notify, projects, summary
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
+from masterbench.notes import mix_notes
 from masterbench.preview import streaming
 from masterbench.references import library
 from masterbench.stems import separate as stem_separation
@@ -35,6 +36,7 @@ ENGINE_ERRORS = (
     streaming.PreviewError,
     chain.ChainError,
     stem_separation.StemError,
+    mix_notes.NotesError,
     LookupError,
 )
 
@@ -118,6 +120,9 @@ def master(
     post: Annotated[
         str | None, typer.Option("--post", "--preset", help="Chain preset to run after matching.")
     ] = None,
+    notify_done: Annotated[
+        bool, typer.Option("--notify", help="Show a macOS notification when finished.")
+    ] = False,
 ) -> None:
     """Master a mix against a reference. Writes a new run and prints a summary."""
     paths, settings = config.get_paths(), config.load_settings()
@@ -135,7 +140,13 @@ def master(
     try:
         result = pipeline.master(mix, options, paths, settings, _progress)
     except ENGINE_ERRORS as exc:
+        if notify_done:
+            notify.notify(f"MasterBench: {mix.name}", f"Mastering failed: {exc}")
         raise _fail(exc) from exc
+    if notify_done:
+        url = f"http://127.0.0.1:{settings.ui_port}/?run={result.manifest.id}"
+        title = f"Mastered: {result.manifest.track.title}"
+        notify.notify(title, summary.headline(result), url)
     typer.echo(summary.as_text(result))
 
 
@@ -481,3 +492,74 @@ def rebalance(
     if chosen.separated:
         typer.echo("Built from separated stems: listen for artifacts before trusting it.")
     typer.echo(summary.as_text(result))
+
+
+@app.command(name="batch")
+def batch_command(
+    mixes: Annotated[list[Path], typer.Argument(exists=True, dir_okay=False, readable=True)],
+    ref: Annotated[str | None, typer.Option(help="Reference for every track.")] = None,
+    genre: Annotated[str | None, typer.Option(help="Genre of the tracks.")] = None,
+    name: Annotated[str, typer.Option(help="A name for the set, e.g. the EP title.")] = "",
+    lufs: Annotated[float | None, typer.Option(help="Integrated loudness target.")] = None,
+    ceiling: Annotated[float | None, typer.Option(help="True-peak ceiling in dBTP.")] = None,
+    pre: Annotated[str | None, typer.Option(help="Chain preset to run before matching.")] = None,
+    post: Annotated[
+        str | None, typer.Option("--post", "--preset", help="Chain preset to run after matching.")
+    ] = None,
+    notify_done: Annotated[
+        bool, typer.Option("--notify", help="Show a macOS notification when finished.")
+    ] = False,
+) -> None:
+    """Master several tracks the same way and report how consistent the set is."""
+    paths, settings = config.get_paths(), config.load_settings()
+    paths.ensure()
+    options = pipeline.MasterOptions(
+        reference=ref or f"{genre or settings.default_genre}/default",
+        target_lufs=_or(lufs, settings.targets.lufs_i),
+        ceiling_dbtp=_or(ceiling, settings.targets.true_peak_dbtp),
+        genre=genre,
+        pre_chain=pre,
+        post_chain=post,
+    )
+    result = batch.run_batch(mixes, options, paths, settings, name, progress=_progress)
+    typer.echo(summary.batch_text(result))
+    if notify_done:
+        done = f"{len(result.runs)} mastered, {len(result.failures)} failed"
+        notify.notify(f"MasterBench batch{': ' + name if name else ''}", done)
+    if result.failures:
+        raise typer.Exit(1)
+
+
+@app.command()
+def notes(
+    run_id: Annotated[str, typer.Argument(help="Id of the run to review.")],
+    intent: Annotated[str, typer.Option(help="What you were going for, in your own words.")] = "",
+    model: Annotated[
+        str | None, typer.Option(help=f"One of {', '.join(mix_notes.PRICES)}.")
+    ] = None,
+    show_payload: Annotated[
+        bool, typer.Option("--payload", help="Print exactly what would be sent, then stop.")
+    ] = False,
+    force: Annotated[bool, typer.Option("--force", help="Send even past the monthly cap.")] = False,
+) -> None:
+    """Ask Claude for mix notes from a run's measurements. Sends numbers, never audio."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        payload = mix_notes.build_payload(run, intent)
+        quote = mix_notes.estimate(payload, model or settings.notes_model, paths, settings)
+        if show_payload:
+            typer.echo(mix_notes.payload_json(payload))
+            typer.echo(
+                f"\n{quote.model}: about {quote.input_tokens} tokens in, roughly "
+                f"${quote.cost_usd:.3f}. Spent this month: ${quote.spent_this_month_usd:.2f} "
+                f"of ${quote.cap_usd:.2f}. API key: {mix_notes.key_status()}.",
+                err=True,
+            )
+            return
+        result = mix_notes.generate(run, paths, settings, intent, model, force=force)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    with index.open_index(paths) as conn:
+        index.sync_notes(conn, paths)
+    typer.echo(mix_notes.render(result))

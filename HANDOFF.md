@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 4 done (2026-11-24); see each phase for what still needs the Mac. Next: Phase 5.
+**Status:** Phases 0 to 5 done (2026-11-24); see each phase for what still needs the Mac or an API key. Next: Phase 6.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -52,6 +52,17 @@ edited in place below and marked *[P0]*):
   input is staged at -6 dBFS and the stems are scaled, resampled and trimmed back.
 - Model weights live in the local state folder, never in the (possibly synced) data root.
 - Stem balance is measured in LUFS: vocal against the rest, drums and bass against the mix.
+
+**Decisions made in Phase 5** (marked *[P5]* below):
+- A batch masters each track as an ordinary run and writes `batches/<id>/batch.json` with
+  the consistency report. Consistency is measured against the set's median.
+- AI notes use the Messages API with structured output (`output_config.format`), effort
+  `medium`, adaptive thinking left on, and the API's server-side refusal fallback on
+  Sonnet. Notes are stored per run (`notes.json`, `notes.md`) and indexed for spend.
+- The request carries measurements and labels only: no audio, paths or hashes.
+- The repo carries Robin's cycle workflow commands in `.claude/commands/` (copied from
+  `claude-workflow-tools` v1.56.0). They need a "Cycle Workflow Config" in a `CLAUDE.md`,
+  which `/setup-cycle` produces; none exists yet.
 
 ---
 
@@ -180,12 +191,12 @@ src/masterbench/
   blind.py             ✓ [P2] blind-test records (JSON, source of truth)
   monitoring.py        # calibration tone, session timer, break reminders (5.21)
   projects.py          ✓ project and run storage, run manifests
-  batch.py             # EP mode and consistency report
+  batch.py             ✓ EP mode and consistency report
   watch.py             ✓ watch folder: debounce, analyze, optional auto-master, notify
   mcp_server.py        # MCP tools over the engine (5.22)
   notes/
-    mix_notes.py       # build prompt from AnalysisReport(s), call Claude, parse result
-    prompt.md          # versioned prompt template
+    mix_notes.py       ✓ payload, estimate and cap, API call, cache, render
+    prompt.md          ✓ versioned prompt template
     trends_prompt.md   # versioned prompt for the progress summary
   ui/
     app.py             ✓ Gradio Blocks app: Master, Compare, Analyze, Progress, Library
@@ -193,7 +204,7 @@ src/masterbench/
     charts.py          ✓ [P2] Plotly figures
     ab_player.js       ✓ synced, gain-matched A/B/C player (Web Audio)
     pitch_editor.js    # note-level pitch view and editor
-quick_action/          # Shortcuts/Automator script + install instructions
+quick_action/          ✓ Automator script + install instructions (untried on macOS)
 launchd/               # optional LaunchAgent plist for the watch folder
 tests/                 ✓ fixtures are generated per test session, never Robin's music
 ```
@@ -212,6 +223,7 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
   references/<genre>/.stems/   # separated stems of references (cached)
   target_curves/<genre>.json
   presets/chains/<name>.toml
+  batches/<id>/batch.json      # runs in the set, failures, consistency report
   projects/<track-slug>/
     track.json                 # slug, title, genre; source of truth for the tracks table
     blind_tests/<id>.json      # one finished blind test each
@@ -223,7 +235,7 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
       master_24.wav   master_16.wav
       previews/       # codec round trips + streaming.json (cached, deletable);
                       # speaker-sim renders join them in Phase 6
-      analysis.json   notes.md (if generated)
+      analysis.json   notes.json + notes.md (if generated)
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
     vocal/<take>/tuned_<settings-hash>.wav, pitch_report.json
 ```
@@ -307,6 +319,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Never upload audio.** Show the exact payload in a "what gets sent" panel.
 - Output as structured JSON, then rendered: top 3–5 issues ranked by impact, each with *what / evidence / fix in the mix (Logic-specific where reasonable) / fix in the master*, plus "what's already good."
 - Cache by payload hash, show the estimated cost, apply a monthly spend cap, and keep the prompt versioned. Tell the model not to invent measurements.
+- *[P5]* Implemented in `notes/mix_notes.py`; `masterbench notes RUN_ID --payload` prints exactly what would be sent. The key comes from `ANTHROPIC_API_KEY`, an `ant auth login` profile, or the Keychain item `masterbench-anthropic`. Never run against the live API yet.
 
 ### 5.10 CLI and Finder Quick Action
 - `masterbench master path/to/bounce.wav --ref hiphop/default --preset streaming-safe` writes a run and prints a summary.
@@ -510,8 +523,11 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met here:** real separations ran with `mdx-2` and `demucs-4-fast` (about real time on 4 Linux CPU cores; the time is stored in `stems.json` and printed). On the fixture, Demucs put drums at -7.6 dB and bass at -3.7 dB against true values of -7.6 and -3.6. Stems from Logic give exact ratios (tested).
 - **Still open:** the timing on the M2, `roformer-2` and `demucs-4` (not run here), and ratios on a real song with a real voice. The synthetic vocal is not recognised as a voice by either model, so vocal-to-beat on separated stems is unproven.
 
-**Phase 5: Batch, AI notes, CLI, Quick Action**
+**Phase 5: Batch, AI notes, CLI, Quick Action — DONE (2026-11-24); live API call and Quick Action untried**
 - *Done when:* a 4-track EP runs unattended with a consistency report, and mix notes return structured JSON with costs logged.
+- **Met:** a 4-track fixture EP masters unattended, survives a broken file, and reports spread and outliers (tested).
+- **Met against a stand-in only:** the notes request is built by the real Anthropic SDK and answered by a local fake server in the tests: structured JSON parsed, cost logged, cache and cap enforced. **No request has reached the real API**, so whether the API accepts this exact parameter combination, and how good the notes are, is unknown.
+- **Untried:** the Automator Quick Action (macOS only).
 
 **Phase 6: Deep analysis**
 - Key and tempo (5.4 musical), **sections** (5.15), **detectors** (5.16), **hip-hop low-end tools** (5.17), **reference quality and suggestions** (5.13), **genre target curves plus curve match mode** (5.14), and **speaker simulation** (5.12).

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from masterbench.analysis.flags import Flag
+from masterbench.batch import BatchResult
 from masterbench.master.pipeline import RunResult
 from masterbench.stems.workflow import Diagnosis
 
@@ -132,4 +135,69 @@ def stems_markdown(diagnosis: Diagnosis) -> str:
         lines.append(f"- Stems sum to within {balance.reconstruction_db:.0f} dB of the mix.")
     if diagnosis.warning:
         lines += ["", f"_{diagnosis.warning}_"]
+    return "\n".join(lines)
+
+
+def batch_text(result: BatchResult) -> str:
+    """Per-track table, the spreads, flags and failures of a batch."""
+    lines = []
+    report = result.report
+    if report is not None:
+        header = ("Track", "LUFS-I", "vs set", "True peak", "LRA", "Loudest part")
+        rows = [header] + [
+            (
+                t.title,
+                f"{t.lufs_i:.1f}",
+                f"{t.loudness_offset_lu:+.1f} LU",
+                f"{t.true_peak_dbtp:+.1f} dBTP",
+                f"{t.lra:.1f} LU",
+                f"{t.loudest_section_lufs:.1f}",
+            )
+            for t in report.tracks
+        ]
+        widths = [max(len(row[i]) for row in rows) for i in range(len(header))]
+        lines += [
+            "  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip()
+            for row in rows
+        ]
+        lines += [
+            "",
+            f"Loudness spread {report.loudness_spread_lu:.1f} LU; loudest sections spread "
+            f"{report.loudest_section_spread_lu:.1f} LU; highest true peak "
+            f"{report.max_true_peak_dbtp:+.1f} dBTP.",
+            "Played in album order, Spotify applies one gain to the whole set, so these "
+            "differences between tracks are what listeners hear.",
+            "",
+            *([flag_line(flag) for flag in report.flags] or ["The set is consistent: no flags."]),
+        ]
+    elif result.runs:
+        lines.append("One track mastered; a consistency report needs at least two.")
+    for failure in result.failures:
+        lines.append(f"✖ {Path(failure.source).name} failed: {failure.error}")
+    lines.append(f"batch: {result.dir}")
+    return "\n".join(lines)
+
+
+def batch_markdown(result: BatchResult) -> str:
+    report = result.report
+    lines = [f"### Batch `{result.id}`" + (f": {result.name}" if result.name else ""), ""]
+    if report is not None:
+        lines += [
+            "| Track | LUFS-I | vs set | True peak | LRA | Loudest part |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {t.title} | {t.lufs_i:.1f} | {t.loudness_offset_lu:+.1f} LU | "
+            f"{t.true_peak_dbtp:+.1f} dBTP | {t.lra:.1f} LU | {t.loudest_section_lufs:.1f} |"
+            for t in report.tracks
+        ]
+        lines += [
+            "",
+            f"Loudness spread **{report.loudness_spread_lu:.1f} LU**, loudest sections "
+            f"**{report.loudest_section_spread_lu:.1f} LU**. In album order Spotify applies "
+            "one gain to the whole set, so these differences are what listeners hear.",
+            "",
+            *([f"- {flag_line(f)}" for f in report.flags] or ["The set is consistent: no flags."]),
+        ]
+    lines += [f"- ✖ {Path(f.source).name} failed: {f.error}" for f in result.failures]
     return "\n".join(lines)

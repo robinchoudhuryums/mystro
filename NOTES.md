@@ -263,6 +263,49 @@ gain for the whole album, which the EP mode in Phase 5 should report.
 - Manifests store absolute paths, so a data root shared between two Macs with different
   user names would need those rewritten.
 
+## Phase 5: batch, AI notes, Quick Action (2026-11-24)
+
+### What was built
+
+`masterbench batch`, `masterbench notes`, `master --notify`, a Batch tab, AI mix notes in
+the Analyze tab, `quick_action/`. Robin's cycle workflow commands were added under
+`.claude/commands/`. 222 tests pass.
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| anthropic SDK 2.13 sends the key as `Authorization: Bearer` under API version `2026-10-21`, not `x-api-key`. | Nothing to do in our code; noted because older examples show the other header. |
+| Claude Sonnet 5.5 rejects forced tool choice and disabled thinking. | Notes use structured output (`output_config.format` with a JSON schema) and leave thinking adaptive, steering depth with `effort: medium`. |
+| Sonnet 5.5 can decline a request (`stop_reason: "refusal"`). | The request opts into the API's server-side fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). A refusal that survives it is an error and nothing is saved. Haiku has no server-side fallback, so it is called without one. |
+| Matching every track of a set to one reference pulls their tone together. | In a batch, band outliers are rare by construction; the report mostly earns its keep on loudness, peaks, and tracks given different chains or references. |
+| A full payload for one run is about 12 kB of JSON. | Roughly 4k input tokens: about 2 to 4 cents per run on Sonnet 5.5, under a tenth of a cent on Haiku 5.5. |
+
+### Decisions
+
+- **What is sent:** track title and genre, targets and chain module names, loudness, band
+  levels and deltas, a third-octave spectrum, stereo figures, a short loudness curve, the
+  flags, and stem and streaming figures when they exist. Paths, hashes and file names are
+  left out.
+- **Cost control:** an offline estimate before sending, the real cost from the response's
+  token counts, a monthly cap (`notes_monthly_cap_usd`, default $5) checked against the
+  notes stored on disk, and reuse of a stored answer when measurements, intent, model and
+  prompt version are all unchanged.
+- **Prices are a table in the code** (`PRICES`), from the published per-token rates on
+  2026-11-24. They need updating by hand if rates change.
+- **Batch consistency** compares each master with the set's median: loudness beyond 0.7 LU,
+  a band beyond 2.5 dB, or a loudest section beyond 1.4 LU is flagged. "Loudest section" is
+  the short-term loudness maximum until real sections arrive in Phase 6.
+
+### Known gaps
+
+- **No live API call has been made.** There is no key in the build environment, and network
+  secrets cannot be stored for Anthropic's own hosts. The first real `masterbench notes`
+  run is the test.
+- The Quick Action script and its Automator steps are untried.
+- Album-mode normalization is described in the batch report but not computed, because
+  Spotify's article does not say how the album gain is derived.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -281,6 +324,9 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 5. **watchdog** on the FSEvents backend (inotify was used here).
 6. **Notifications** through `osascript` or `terminal-notifier` (only the latter can open
    the run link on click), the Quick Action, and the LaunchAgent.
+6a. **AI notes:** run `masterbench notes RUN_ID --payload` to see what would be sent, then
+   without `--payload` once a key is set. This is the first live call.
+6b. **Quick Action:** follow `quick_action/README.md`.
 7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while

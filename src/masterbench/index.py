@@ -176,6 +176,32 @@ def sync_blind_tests(conn: sqlite3.Connection, paths: Paths) -> int:
         return _sync_blind_tests(conn, paths)
 
 
+def _sync_notes(conn: sqlite3.Connection, paths: Paths) -> int:
+    """AI notes live in each run's notes.json; the table mirrors them for spend tracking."""
+    conn.execute("DELETE FROM notes")
+    files = sorted(paths.projects.glob("*/runs/*/notes.json"))
+    for file in files:
+        note = json.loads(file.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT INTO notes (run_id, model, cost_usd, payload_hash, body_json, created_at)"
+            " SELECT id, ?, ?, ?, ?, ? FROM runs WHERE id = ?",
+            (
+                note["model"],
+                note["cost_usd"],
+                note["payload_hash"],
+                json.dumps(note["body"], sort_keys=True),
+                note["created_at"],
+                file.parent.name,
+            ),
+        )
+    return len(files)
+
+
+def sync_notes(conn: sqlite3.Connection, paths: Paths) -> int:
+    with _transaction(conn):
+        return _sync_notes(conn, paths)
+
+
 def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
     """Rebuild every row from the files on disk: tracks, runs, analyses, references, tests."""
     with _transaction(conn):
@@ -194,12 +220,14 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
             _index_run(conn, manifest, run_dir, reports)
         references = _sync_references(conn, paths)
         blind_tests = _sync_blind_tests(conn, paths)
+        notes = _sync_notes(conn, paths)
     tracks = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
     return {
         "tracks": tracks,
         "runs": len(run_dirs),
         "references": references,
         "blind tests": blind_tests,
+        "notes": notes,
     }
 
 

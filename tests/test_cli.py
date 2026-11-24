@@ -59,7 +59,7 @@ def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
 
     (data_root / "masterbench.db").unlink()
     reindexed = runner.invoke(app, ["reindex"])
-    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references, 0 blind tests"
+    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references, 0 blind tests, 0 notes"
 
     run_id = min(p.parent.name for p in data_root.glob("projects/loop/runs/*/master_24.wav"))
     previewed = runner.invoke(app, ["preview", run_id])
@@ -167,3 +167,22 @@ def test_stems_from_the_command_line(data_root: Path, tmp_path: Path, fx: dict[s
     assert too_much.exit_code == 1 and "limited to ±6 dB" in too_much.output
     assert runner.invoke(app, ["rebalance", "night-drive", "--gain", "drums"]).exit_code == 2
     assert runner.invoke(app, ["rebalance", "nope", "--gain", "drums=1"]).exit_code == 1
+
+
+def test_batch_and_notes_payload_from_the_command_line(
+    data_root: Path, tmp_path: Path, fx: dict[str, Path]
+) -> None:
+    runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+    broken = tmp_path / "broken.wav"
+    broken.write_bytes(b"RIFF nope")
+    done = runner.invoke(app, ["batch", str(fx["loop"]), str(fx["sine_sweep"]), "--name", "EP"])
+    assert done.exit_code == 0, done.output
+    assert "Loudness spread" in done.stdout and "sine_sweep" in done.stdout
+    failed = runner.invoke(app, ["batch", str(fx["loop"]), str(broken)])
+    assert failed.exit_code == 1 and "broken.wav failed" in failed.stdout
+
+    run_id = min(p.parent.name for p in data_root.glob("projects/loop/runs/*/master_24.wav"))
+    shown = runner.invoke(app, ["notes", run_id, "--payload", "--intent", "Punchy."])
+    assert shown.exit_code == 0, shown.output
+    assert '"intent": "Punchy."' in shown.stdout and "claude-sonnet-5-5" in shown.output
+    assert runner.invoke(app, ["notes", "20260101-000000-abcdef", "--payload"]).exit_code == 1
