@@ -60,7 +60,10 @@ def test_master_workflow(data_root: Path, fx: dict[str, Path]) -> None:
 
     (data_root / "masterbench.db").unlink()
     reindexed = runner.invoke(app, ["reindex"])
-    assert reindexed.stdout.strip() == "2 tracks, 3 runs, 1 references, 0 blind tests, 0 notes"
+    assert (
+        reindexed.stdout.strip()
+        == "2 tracks, 3 runs, 1 references, 0 blind tests, 0 notes, 0 sessions"
+    )
 
     run_id = min(p.parent.name for p in data_root.glob("projects/loop/runs/*/master_24.wav"))
     previewed = runner.invoke(app, ["preview", run_id])
@@ -257,3 +260,50 @@ def test_deep_analysis_from_the_command_line(data_root: Path, tmp_path: Path) ->
     assert "Phone speaker: On this speaker the sub and bass are gone" in sims.stdout
     assert "approximations" in sims.stdout
     assert len(list(data_root.glob("projects/weak-hook/runs/*/previews/speaker_*.wav"))) == 6
+
+
+def test_phase_seven_commands(data_root: Path, tmp_path: Path, fx: dict[str, Path]) -> None:
+    from masterbench import fixtures
+
+    stems, _ = fixtures.song_stems()
+    names = {"drums": "Drums", "bass": "808 Bass", "other": "Pads", "vocals": "Lead Vox"}
+    for role, audio in stems.items():
+        fixtures.write_wav(tmp_path / "stems" / f"{names[role]}.wav", audio)
+    runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+    runner.invoke(
+        app,
+        [
+            "stems",
+            "import",
+            str(tmp_path / "stems"),
+            "--title",
+            "Night Drive",
+            "--genre",
+            "hip-hop",
+        ],
+    )
+    bounce = next(data_root.glob("projects/night-drive/input/*.wav"))
+    assert runner.invoke(app, ["master", str(bounce), "--title", "Night Drive"]).exit_code == 0
+    run_id = next(data_root.glob("projects/night-drive/runs/*/master_24.wav")).parent.name
+
+    made = runner.invoke(app, ["versions", run_id])
+    assert made.exit_code == 0, made.output
+    assert "instrumental" in made.stdout and "acapella" in made.stdout
+    assert "Instrumental + a cappella is within -3" in made.stdout
+    assert len(list(data_root.glob(f"projects/night-drive/versions/{run_id}/*_24.wav"))) == 2
+    assert runner.invoke(app, ["analyze", str(fx["loop"])]).exit_code == 0
+    analysis_only = next(data_root.glob("projects/loop/runs/*/run.json")).parent.name
+    refused = runner.invoke(app, ["versions", analysis_only])
+    assert refused.exit_code == 1 and "made from a master" in refused.output
+
+    assert (
+        "Habits need at least 3 analyzed tracks; there are 2."
+        in runner.invoke(app, ["habits"]).stdout
+    )
+    shown = runner.invoke(app, ["trends", "--payload"])
+    assert shown.exit_code == 0 and '"tracks_considered": 2' in shown.stdout
+    tone = runner.invoke(app, ["calibrate"])
+    assert (
+        "78 dB SPL" in tone.stdout
+        and (data_root / "calibration" / "pink_noise_-20dBFS.wav").is_file()
+    )

@@ -4,10 +4,9 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import anthropic
-import httpx2
 import pytest
 
+from conftest import FakeAPI
 from masterbench import index
 from masterbench.config import Paths, Settings
 from masterbench.master import pipeline
@@ -31,51 +30,6 @@ REPLY = {
     "already_good": ["True peak is under the ceiling."],
     "caveats": ["No stems were available."],
 }
-
-
-class FakeAPI:
-    """An HTTP stand-in behind the real SDK client, so request building is exercised."""
-
-    def __init__(
-        self, reply: dict | None = None, status: int = 200, stop_reason: str = "end_turn"
-    ) -> None:
-        self.requests: list[httpx2.Request] = []
-        self.reply, self.status, self.stop_reason = reply or REPLY, status, stop_reason
-        self.text: str | None = None
-
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
-        self.requests.append(request)
-        if self.status != 200:
-            error = {
-                "type": "error",
-                "error": {"type": "authentication_error", "message": "bad key"},
-            }
-            return httpx2.Response(self.status, json=error)
-        body = json.loads(request.content)
-        text = self.text if self.text is not None else json.dumps(self.reply)
-        return httpx2.Response(
-            200,
-            json={
-                "id": "msg_test",
-                "type": "message",
-                "role": "assistant",
-                "model": body["model"],
-                "content": [
-                    {"type": "thinking", "thinking": "", "signature": "sig"},
-                    {"type": "text", "text": text},
-                ],
-                "stop_reason": self.stop_reason,
-                "stop_sequence": None,
-                "usage": {"input_tokens": 4000, "output_tokens": 1500},
-            },
-        )
-
-    def client(self) -> anthropic.Anthropic:
-        http = anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(self))
-        return anthropic.Anthropic(api_key="test-key", http_client=http, max_retries=0)
-
-    def body(self, number: int = -1) -> dict:
-        return json.loads(self.requests[number].content)
 
 
 @pytest.fixture
@@ -115,7 +69,7 @@ def test_payload_is_measurements_and_labels_only(run: RunResult, paths: Paths) -
 def test_request_goes_out_as_structured_output_with_refusal_fallback(
     run: RunResult, paths: Paths, settings: Settings
 ) -> None:
-    api = FakeAPI()
+    api = FakeAPI(REPLY)
     notes = mix_notes.generate(run, paths, settings, "Dark and heavy.", client=api.client())
 
     (request,) = api.requests
@@ -146,7 +100,7 @@ def test_request_goes_out_as_structured_output_with_refusal_fallback(
 
 
 def test_same_measurements_reuse_the_stored_answer(run: RunResult, paths: Paths, settings) -> None:
-    api = FakeAPI()
+    api = FakeAPI(REPLY)
     first = mix_notes.generate(run, paths, settings, client=api.client())
     again = mix_notes.generate(run, paths, settings, client=api.client())
     assert len(api.requests) == 1 and again.cached and again.cost_usd == 0.0
@@ -159,14 +113,14 @@ def test_same_measurements_reuse_the_stored_answer(run: RunResult, paths: Paths,
 def test_haiku_uses_the_plain_endpoint_without_fallbacks(
     run: RunResult, paths: Paths, settings
 ) -> None:
-    api = FakeAPI()
+    api = FakeAPI(REPLY)
     notes = mix_notes.generate(run, paths, settings, model="claude-haiku-5-5", client=api.client())
     assert "fallbacks" not in api.body() and "anthropic-beta" not in api.requests[0].headers
     assert notes.cost_usd == pytest.approx((4000 * 0.10 + 1500 * 0.50) / 1e6)
 
 
 def test_monthly_cap_blocks_before_anything_is_sent(run: RunResult, paths: Paths, settings) -> None:
-    api = FakeAPI()
+    api = FakeAPI(REPLY)
     tight = replace(settings, notes_monthly_cap_usd=0.01)
     with pytest.raises(NotesError, match="would pass the monthly cap"):
         mix_notes.generate(run, paths, tight, client=api.client())
@@ -183,9 +137,9 @@ def test_monthly_cap_blocks_before_anything_is_sent(run: RunResult, paths: Paths
 @pytest.mark.parametrize(
     ("api", "message"),
     [
-        (FakeAPI(stop_reason="refusal"), "declined"),
-        (FakeAPI(stop_reason="max_tokens"), "cut off"),
-        (FakeAPI(status=401), "rejected the key"),
+        (FakeAPI(REPLY, stop_reason="refusal"), "declined"),
+        (FakeAPI(REPLY, stop_reason="max_tokens"), "cut off"),
+        (FakeAPI(REPLY, status=401), "rejected the key"),
     ],
 )
 def test_failed_requests_save_nothing(run: RunResult, paths: Paths, settings, api, message) -> None:
@@ -195,14 +149,14 @@ def test_failed_requests_save_nothing(run: RunResult, paths: Paths, settings, ap
 
 
 def test_invalid_json_reply_is_an_error(run: RunResult, paths: Paths, settings) -> None:
-    api = FakeAPI()
+    api = FakeAPI(REPLY)
     api.text = "Sure! Here are some notes."
     with pytest.raises(NotesError, match="not valid JSON"):
         mix_notes.generate(run, paths, settings, client=api.client())
 
 
 def test_notes_are_indexed_and_survive_reindex(run: RunResult, paths: Paths, settings) -> None:
-    notes = mix_notes.generate(run, paths, settings, client=FakeAPI().client())
+    notes = mix_notes.generate(run, paths, settings, client=FakeAPI(REPLY).client())
     paths.db.unlink(missing_ok=True)
     with index.open_index(paths) as conn:
         assert index.reindex(conn, paths)["notes"] == 1

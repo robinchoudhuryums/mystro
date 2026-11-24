@@ -14,6 +14,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -99,12 +100,17 @@ class MixNotes:
     body: dict[str, Any]
 
 
-def system_prompt() -> tuple[str, int]:
-    text = resources.files("masterbench.notes").joinpath("prompt.md").read_text(encoding="utf-8")
+def load_prompt(name: str) -> tuple[str, int]:
+    """A packaged prompt and the version it declares on its first line."""
+    text = resources.files("masterbench.notes").joinpath(name).read_text(encoding="utf-8")
     version = re.search(r"<!-- prompt-version: (\d+) -->", text)
     if version is None:
-        raise NotesError("notes/prompt.md has no prompt-version marker")
+        raise NotesError(f"notes/{name} has no prompt-version marker")
     return text[version.end() :].strip(), int(version.group(1))
+
+
+def system_prompt() -> tuple[str, int]:
+    return load_prompt("prompt.md")
 
 
 def _analysis(report: AnalysisReport) -> dict[str, Any]:
@@ -265,16 +271,31 @@ def _stored_notes(paths: Paths) -> list[dict[str, Any]]:
     return [json.loads(f.read_text(encoding="utf-8")) for f in sorted(files)]
 
 
+def trends_dir(paths: Paths) -> Path:
+    return paths.root / "trends"
+
+
+def stored_trends(paths: Paths) -> list[dict[str, Any]]:
+    files = sorted(trends_dir(paths).glob("*.json")) if trends_dir(paths).is_dir() else []
+    return [json.loads(f.read_text(encoding="utf-8")) for f in files]
+
+
 def spent_this_month(paths: Paths) -> float:
+    """Everything the API was paid this month: mix notes and trend summaries."""
     month = projects.now_iso()[:7]
-    return round(
-        sum(n["cost_usd"] for n in _stored_notes(paths) if n["created_at"][:7] == month), 5
-    )
+    paid = [*_stored_notes(paths), *stored_trends(paths)]
+    return round(sum(n["cost_usd"] for n in paid if n["created_at"][:7] == month), 5)
 
 
-def estimate(payload: dict[str, Any], model: str, paths: Paths, settings: Settings) -> Estimate:
+def estimate(
+    payload: dict[str, Any],
+    model: str,
+    paths: Paths,
+    settings: Settings,
+    prompt: str | None = None,
+) -> Estimate:
     """A rough cost before sending. The real figure comes back with the response."""
-    prompt, _ = system_prompt()
+    prompt = prompt if prompt is not None else system_prompt()[0]
     tokens = int((len(prompt) + len(payload_json(payload))) / _CHARS_PER_TOKEN)
     return Estimate(
         model=model,
@@ -311,8 +332,14 @@ def make_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def _request(client: anthropic.Anthropic, model: str, payload: dict[str, Any]) -> Any:
-    prompt, _ = system_prompt()
+def ask(
+    client: anthropic.Anthropic,
+    model: str,
+    prompt: str,
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+) -> Any:
+    """One structured-output request: a system prompt, a JSON payload, a JSON schema back."""
     arguments: dict[str, Any] = {
         "model": model,
         "max_tokens": MAX_TOKENS,
@@ -320,7 +347,7 @@ def _request(client: anthropic.Anthropic, model: str, payload: dict[str, Any]) -
         "messages": [{"role": "user", "content": payload_json(payload)}],
         "output_config": {
             "effort": EFFORT,
-            "format": {"type": "json_schema", "schema": NOTES_SCHEMA},
+            "format": {"type": "json_schema", "schema": schema},
         },
     }
     try:
@@ -346,7 +373,7 @@ def _request(client: anthropic.Anthropic, model: str, payload: dict[str, Any]) -
         raise NotesError(f"No usable Anthropic credentials: {exc}") from exc
 
 
-def _body(response: Any) -> dict[str, Any]:
+def parse_reply(response: Any) -> dict[str, Any]:
     if response.stop_reason == "refusal":
         raise NotesError("The model declined to answer this request.")
     if response.stop_reason == "max_tokens":
@@ -392,8 +419,9 @@ def generate(
             f"${quote.cost_usd:.2f} more, cap ${quote.cap_usd:.2f}. Raise notes_monthly_cap_usd "
             "in settings.toml or force it."
         )
-    response = _request(client or make_client(), model, payload)
-    body = _body(response)
+    prompt, _ = system_prompt()
+    response = ask(client or make_client(), model, prompt, payload, NOTES_SCHEMA)
+    body = parse_reply(response)
     usage = response.usage
     notes = MixNotes(
         run_id=run.manifest.id,

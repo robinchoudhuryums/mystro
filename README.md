@@ -160,6 +160,52 @@ The key is read from `ANTHROPIC_API_KEY`, or from the macOS Keychain if you stor
 security add-generic-password -s masterbench-anthropic -a anthropic -w
 ```
 
+Make an instrumental and an a cappella that get the same processing as a master. This
+needs stems for the track (from Logic, or separated) and reports how closely the two add
+up to the master:
+
+```bash
+uv run masterbench versions 20261124-185126-7f55cf
+```
+
+See what keeps happening across your recent tracks, and ask Claude for the top habits with
+an exercise for each (numbers only; `--payload` shows what would be sent):
+
+```bash
+uv run masterbench habits
+```
+
+```bash
+uv run masterbench trends --payload
+```
+
+Set a repeatable listening level: this writes 30 seconds of band-limited pink noise at
+-20 dBFS RMS and prints the steps. The UI plays the same file in its Settings tab and
+reminds you to take a break every 50 minutes.
+
+```bash
+uv run masterbench calibrate
+```
+
+Let Claude Code query your runs over MCP (read-only unless `mcp_allow_writes = true`):
+
+```bash
+claude mcp add masterbench -- uv run --project "$PWD" masterbench mcp
+```
+
+The tools are `list_tracks`, `list_runs`, `get_analysis`, `compare_runs`, `analyze_file`,
+`suggest_reference`, `get_progress_trends`, `get_habits`, and, with writes on,
+`master_file` and `run_batch`. Files outside the data folder are refused unless their
+folder is listed in `mcp_allowed_dirs`. For the Claude desktop app, add this under
+`mcpServers` in its config file:
+
+```json
+"masterbench": {
+  "command": "uv",
+  "args": ["run", "--project", "/path/to/mystro", "masterbench", "mcp"]
+}
+```
+
 See what the codecs and Spotify's normalization do to a master:
 
 ```bash
@@ -182,6 +228,10 @@ Defaults can be changed in `~/MasterBench/settings.toml`:
 ```toml
 default_genre = "house"
 watch_auto_master = true
+
+break_interval_min = 45
+mcp_allow_writes = true
+mcp_allowed_dirs = ["~/Music/Bounces"]
 
 [targets]
 lufs_i = -11.0
@@ -227,7 +277,11 @@ src/masterbench/
   track.py          hand-set key and sections, low-end report
   batch.py          EP mode and consistency report
   notes/            AI mix notes: payload, prompt, API call
-  progress.py       per-track trends, recurring flags, blind-test history
+  notes/trends.py   AI trend summary across tracks
+  progress.py       per-track trends, recurring flags, habits, blind-test history
+  release/          instrumental and a cappella versions with locked processing
+  monitoring.py     calibration noise, listening sessions, break reminders
+  mcp_server.py     MCP tools over the engine
   ui/               Gradio app, charts, Web Audio A/B/C player
   fixtures.py       synthetic test audio with known ground truth
   migrations/       numbered SQL files, applied in order

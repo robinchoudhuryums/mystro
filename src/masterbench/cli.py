@@ -11,14 +11,26 @@ from typing import Annotated
 
 import typer
 
-from masterbench import audio_io, batch, config, fixtures, index, notify, projects, summary
+from masterbench import (
+    audio_io,
+    batch,
+    config,
+    fixtures,
+    index,
+    monitoring,
+    notify,
+    progress,
+    projects,
+    summary,
+)
 from masterbench import track as track_tools
 from masterbench.analysis.report import analyze_audio
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
-from masterbench.notes import mix_notes
+from masterbench.notes import mix_notes, trends
 from masterbench.preview import speakers, streaming
 from masterbench.references import library, suggest, target_curve
+from masterbench.release import versions as alternate_versions
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 
@@ -42,6 +54,7 @@ ENGINE_ERRORS = (
     stem_separation.StemError,
     mix_notes.NotesError,
     track_tools.TrackError,
+    alternate_versions.VersionError,
     LookupError,
 )
 
@@ -740,3 +753,85 @@ def speakers_command(
         typer.echo(f"{item.label}: {item.message}")
         typer.echo(f"  {run.run_dir / item.file}")
     typer.echo(speakers.NOTICE)
+
+
+@app.command()
+def versions(
+    run_id: Annotated[str, typer.Argument(help="Id of a master run.")],
+    stem_set: Annotated[
+        str | None, typer.Option("--set", help="Stem set name; default: Logic stems, else newest.")
+    ] = None,
+) -> None:
+    """Make an instrumental and an a cappella that got the same processing as the master."""
+    paths, settings = config.get_paths(), config.load_settings()
+    try:
+        run = pipeline.load_run(paths, run_id)
+        found = alternate_versions.make(run, paths, settings, stem_set)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.versions_text(found, alternate_versions.versions_dir(run)))
+
+
+@app.command()
+def habits() -> None:
+    """Recurring habits across your recent tracks, from the index."""
+    paths, settings = config.get_paths(), config.load_settings()
+    with index.open_index(paths) as conn:
+        points = progress.track_points(conn)
+    found = progress.habits(points, settings.thresholds)
+    typer.echo(summary.habits_text(found, min(len(points), progress.HABIT_WINDOW)))
+
+
+@app.command(name="trends")
+def trends_command(
+    model: Annotated[
+        str | None, typer.Option(help=f"One of {', '.join(mix_notes.PRICES)}.")
+    ] = None,
+    show_payload: Annotated[
+        bool, typer.Option("--payload", help="Print exactly what would be sent, then stop.")
+    ] = False,
+    force: Annotated[bool, typer.Option("--force", help="Send even past the monthly cap.")] = False,
+) -> None:
+    """Ask Claude for your top habits and a practice exercise for each. Sends numbers only."""
+    paths, settings = config.get_paths(), config.load_settings()
+    with index.open_index(paths) as conn:
+        payload = trends.gather(conn, settings)
+    try:
+        if show_payload:
+            prompt, _ = mix_notes.load_prompt(trends.PROMPT_FILE)
+            used = model or settings.notes_model
+            quote = mix_notes.estimate(payload, used, paths, settings, prompt)
+            typer.echo(mix_notes.payload_json(payload))
+            typer.echo(
+                f"\n{quote.model}: about {quote.input_tokens} tokens in, roughly "
+                f"${quote.cost_usd:.3f}. Spent this month: ${quote.spent_this_month_usd:.2f} "
+                f"of ${quote.cap_usd:.2f}. API key: {mix_notes.key_status()}.",
+                err=True,
+            )
+            return
+        result = trends.generate(payload, paths, settings, model, force=force)
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(trends.render(result))
+
+
+@app.command()
+def calibrate() -> None:
+    """Write the level-calibration noise and print how to set your monitors with it."""
+    paths, settings = config.get_paths(), config.load_settings()
+    paths.ensure()
+    typer.echo(f"Noise file: {monitoring.calibration_file(paths)}")
+    typer.echo("")
+    typer.echo(monitoring.calibration_steps(settings))
+
+
+@app.command()
+def mcp() -> None:
+    """Run the MCP server on stdio, for Claude Code or the Claude app."""
+    from masterbench import mcp_server
+
+    mcp_server.serve(config.get_paths(), config.load_settings())
+
+
+if __name__ == "__main__":
+    app()

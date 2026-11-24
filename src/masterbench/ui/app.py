@@ -6,7 +6,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from masterbench import audio_io, batch, index, progress, projects, summary
+from masterbench import audio_io, batch, index, monitoring, notify, progress, projects, summary
 from masterbench import track as track_tools
 from masterbench.analysis.compare import BAND_LABELS
 from masterbench.analysis.report import analyze_audio
@@ -14,10 +14,11 @@ from masterbench.config import Paths, Settings
 from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
-from masterbench.notes import mix_notes
+from masterbench.notes import mix_notes, trends
 from masterbench.preview import speakers, streaming
 from masterbench.preview.streaming import StreamingPreview
 from masterbench.references import library, suggest, target_curve
+from masterbench.release import versions as alternate_versions
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 from masterbench.stems.separate import StemSet
@@ -37,6 +38,7 @@ ENGINE_ERRORS = (
     mix_notes.NotesError,
     track_tools.TrackError,
     target_curve.CurveError,
+    alternate_versions.VersionError,
     LookupError,
 )
 MATCH_REFERENCE, MATCH_CURVE = "One reference track", "Genre target curve"
@@ -188,8 +190,8 @@ def analysis_view(result: RunResult, settings: Settings, paths: Paths) -> tuple:
     )
 
 
-def progress_view(paths: Paths) -> tuple:
-    """Values for (band trend plot, loudness trend plot, flag plot, blind-test rows)."""
+def progress_view(paths: Paths, settings: Settings) -> tuple:
+    """Values for (habits, band trends, loudness trends, song shape, flags, blind-test rows)."""
     with index.open_index(paths) as conn:
         points = progress.track_points(conn)
         tests = progress.blind_results(conn)
@@ -197,12 +199,73 @@ def progress_view(paths: Paths) -> tuple:
         [t.created_at[:16].replace("T", " "), t.title, t.winner, " > ".join(t.ranking)]
         for t in tests
     ]
+    found = progress.habits(points, settings.thresholds)
+    text = "### Habits\n\n" + summary.habits_text(found, min(len(points), progress.HABIT_WINDOW))
+    wins = progress.blind_summary(tests)
+    if wins:
+        tally = ", ".join(f"{label} {count}" for label, count in wins.items())
+        text += f"\n\nBlind tests, preferred version: {tally}."
     return (
+        text,
         charts.band_trends(points),
         charts.loudness_trends(points),
+        charts.shape_trends(points),
         charts.flag_frequency(progress.flag_counts(points), len(points)),
         rows,
     )
+
+
+def settings_markdown(paths: Paths, settings: Settings) -> str:
+    """Where things are and how MasterBench is set up. Changed by editing settings.toml."""
+    targets = settings.targets
+    index_note = " (kept on this machine because the data folder is synced)" if paths.synced else ""
+    writes = "allowed" if settings.mcp_allow_writes else "off (read-only)"
+    folders = ", ".join(settings.mcp_allowed_dirs) or "the data folder only"
+    return "\n".join(
+        [
+            f"- **Data folder:** `{paths.root}`",
+            f"- **Watch folder:** `{paths.inbox}` (auto-master: "
+            f"{'on' if settings.watch_auto_master else 'off'})",
+            f"- **Index:** `{paths.db}`{index_note}",
+            f"- **Targets:** {targets.lufs_i:.1f} LUFS, {targets.true_peak_dbtp:+.1f} dBTP",
+            f"- **Default genre:** {settings.default_genre}",
+            f"- **AI notes:** model {settings.notes_model}; "
+            f"${mix_notes.spent_this_month(paths):.2f} of ${settings.notes_monthly_cap_usd:.2f} "
+            f"spent this month; API key: {mix_notes.key_status()}",
+            f"- **MCP server:** writes {writes}; may read {folders}",
+            f"- **Break reminder:** every {settings.break_interval_min} minutes",
+            "",
+            f"Change these in `{paths.settings}` and restart. The thresholds behind every flag "
+            "are settable there too, under `[thresholds]`.",
+        ]
+    )
+
+
+MCP_SETUP = """Let Claude Code or the Claude app query your runs. In Terminal, from the repo:
+
+```bash
+claude mcp add masterbench -- uv run --project "$PWD" masterbench mcp
+```
+
+For the Claude desktop app, add this under `mcpServers` in its config file, with the path to
+your checkout:
+
+```json
+"masterbench": {
+  "command": "uv",
+  "args": ["run", "--project", "/path/to/mystro", "masterbench", "mcp"]
+}
+```
+
+It is read-only unless `mcp_allow_writes = true` is set in settings.toml."""
+
+
+def fresh_choices(paths: Paths, session_id: str) -> list[tuple[str, str]]:
+    """Fresh-ears checks queued in an earlier session, as (label, 'slug|run id')."""
+    return [
+        (f"{c.track_slug}, queued {c.queued_at[:10]}", f"{c.track_slug}|{c.run_ids[0]}")
+        for c in monitoring.fresh_ears_due(paths, session_id)
+    ]
 
 
 def gain_rows(stem_set: StemSet, diagnosis: Diagnosis) -> list[list]:
@@ -220,6 +283,9 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
 
     with gr.Blocks(title="MasterBench") as app:
         gr.Markdown("# MasterBench")
+        session = monitoring.start_session(paths)
+        session_md = gr.Markdown(monitoring.status_text(session, settings))
+        session_timer = gr.Timer(60)
         with gr.Tab("Master"), gr.Row():
             with gr.Column(scale=1):
                 mix = gr.File(label="Mix", file_types=UPLOAD_TYPES, type="filepath")
@@ -269,6 +335,15 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     cmp_render = gr.Button("Render streaming previews")
                     cmp_speakers = gr.Button("Render speaker sims")
             cmp_stems = gr.Checkbox(label="Add stem solos (when this track has stems)")
+            with gr.Row():
+                fresh_pick = gr.Dropdown(
+                    label="Fresh-ears checks waiting from an earlier session",
+                    choices=fresh_choices(paths, session.id),
+                    value=None,
+                    scale=3,
+                )
+                fresh_queue = gr.Button("Re-check these with fresh ears next session", scale=2)
+            fresh_md = gr.Markdown()
             ab_player = player.component(paths)
             gr.Markdown(
                 "Loudness matching only changes playback level; exported files are untouched."
@@ -357,9 +432,21 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             batch_name = gr.Textbox(label="Name of the set (optional)")
             batch_run = gr.Button("Master the set", variant="primary")
             batch_md = gr.Markdown()
+        with gr.Tab("Release") as release_tab:
+            rel_run = gr.Dropdown(label="Master run", choices=run_choices(paths), value=None)
+            rel_checklist = gr.Markdown()
+            rel_versions = gr.Button("Make the instrumental and a cappella", variant="primary")
+            gr.Markdown(
+                "Needs the track's stems (Stems tab). Both versions get the master's processing, "
+                "fixed, so together they add up to the master."
+            )
+            rel_md = gr.Markdown()
+            rel_files = gr.File(label="Versions", file_count="multiple", interactive=False)
         with gr.Tab("Progress") as progress_tab:
+            habits_md = gr.Markdown()
             trend_plot = gr.Plot()
             loudness_trend_plot = gr.Plot()
+            shape_plot = gr.Plot()
             flag_plot = gr.Plot()
             blind_table = gr.Dataframe(
                 headers=["When", "Track", "Preferred", "Ranking"],
@@ -367,6 +454,33 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 type="array",
                 interactive=False,
             )
+            with gr.Accordion(
+                "AI trend summary (optional; sends numbers, never audio)", open=False
+            ):
+                with gr.Row():
+                    trend_model = gr.Dropdown(
+                        label="Model", choices=list(mix_notes.PRICES), value=settings.notes_model
+                    )
+                    trend_preview = gr.Button("Show what gets sent")
+                    trend_send = gr.Button("Get my top habits and exercises", variant="primary")
+                trend_quote = gr.Markdown()
+                trend_payload = gr.Code(label="Exactly what is sent", language="json", lines=10)
+                trend_md = gr.Markdown()
+        with gr.Tab("Settings"):
+            gr.Markdown(settings_markdown(paths, settings))
+            gr.Markdown("### Listening level")
+            gr.Audio(
+                value=str(monitoring.calibration_file(paths)),
+                label="Calibration noise",
+                type="filepath",
+                interactive=False,
+            )
+            gr.Markdown(monitoring.calibration_steps(settings))
+            with gr.Row():
+                calibrated_button = gr.Button("Level is set: mark this session calibrated")
+                break_button = gr.Button("I took a break")
+            gr.Markdown("### MCP server")
+            gr.Markdown(MCP_SETUP)
         with gr.Tab("Library"):
             table = gr.Dataframe(
                 value=library_rows(paths),
@@ -855,6 +969,95 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             )
             return summary.batch_markdown(done)
 
+        def on_release_run(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                return "", "", None
+            items = summary.release_checklist(
+                result, settings.targets.lufs_i, settings.targets.true_peak_dbtp
+            )
+            made = alternate_versions.load(result)
+            folder = alternate_versions.versions_dir(result)
+            files = [str(folder / v.file) for v in made.versions] if made else None
+            text = summary.versions_markdown(made) if made else ""
+            return "### Before release\n\n" + summary.checklist_markdown(items), text, files
+
+        def on_versions(run_id: str | None):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a master run first.")
+            try:
+                made = alternate_versions.make(result, paths, settings)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            folder = alternate_versions.versions_dir(result)
+            return summary.versions_markdown(made), [str(folder / v.file) for v in made.versions]
+
+        def trend_payload_now() -> dict:
+            with index.open_index(paths) as conn:
+                return trends.gather(conn, settings)
+
+        def on_trend_preview(model: str):
+            payload = trend_payload_now()
+            prompt, _ = mix_notes.load_prompt(trends.PROMPT_FILE)
+            try:
+                quote = mix_notes.estimate(payload, model, paths, settings, prompt)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return notes_quote_text(quote), mix_notes.payload_json(payload)
+
+        def on_trend_send(model: str):
+            payload = trend_payload_now()
+            try:
+                written = trends.generate(payload, paths, settings, model)
+            except ENGINE_ERRORS as exc:
+                raise gr.Error(str(exc)) from exc
+            return trends.render(written), mix_notes.payload_json(payload)
+
+        reminded: list[float] = []
+
+        def on_tick():
+            current = monitoring.heartbeat(paths, session.id)
+            due = monitoring.break_due(current, settings)
+            last = reminded[-1] if reminded else None
+            if due and (last is None or current.minutes - last >= settings.break_interval_min):
+                reminded.append(current.minutes)
+                notify.notify(
+                    "MasterBench: time for a break",
+                    f"{current.minutes_since_break:.0f} minutes of listening. Rest your ears.",
+                )
+            return monitoring.status_text(current, settings)
+
+        def on_calibrated():
+            return monitoring.status_text(monitoring.mark_calibrated(paths, session.id), settings)
+
+        def on_break():
+            reminded.clear()
+            return monitoring.status_text(monitoring.take_break(paths, session.id), settings)
+
+        def on_fresh_queue(run_id: str | None, extra_ids: list[str] | None):
+            result = load(run_id)
+            if result is None:
+                raise gr.Error("Choose a run first.")
+            track = result.manifest.track
+            run_ids = [result.manifest.id, *(extra_ids or [])]
+            monitoring.queue_fresh_ears(paths, session.id, track.slug, run_ids)
+            return (
+                f"Queued **{track.title}** for a blind re-check. It appears here the next time "
+                "you start MasterBench."
+            )
+
+        def on_fresh_pick(choice: str | None):
+            if not choice:
+                return gr.skip(), gr.skip(), gr.skip()
+            slug, _, run_id = choice.partition("|")
+            monitoring.finish_fresh_ears(paths, slug)
+            hint = (
+                'Loaded. Add the other versions under "Also load masters", then click '
+                "**Blind test** in the player and rank them before revealing."
+            )
+            return run_id, hint, gr.Dropdown(choices=fresh_choices(paths, session.id), value=None)
+
         genre.change(on_genre, genre, reference)
         notes_preview.click(
             on_notes_preview, [an_run, notes_intent, notes_model], [notes_quote, notes_payload]
@@ -922,10 +1125,20 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         compare_tab.select(refresh_runs, cmp_run, cmp_run)
         analyze_tab.select(refresh_runs, an_run, an_run)
         progress_tab.select(
-            lambda: progress_view(paths),
+            lambda: progress_view(paths, settings),
             None,
-            [trend_plot, loudness_trend_plot, flag_plot, blind_table],
+            [habits_md, trend_plot, loudness_trend_plot, shape_plot, flag_plot, blind_table],
         )
+        release_tab.select(refresh_runs, rel_run, rel_run)
+        rel_run.change(on_release_run, rel_run, [rel_checklist, rel_md, rel_files])
+        rel_versions.click(on_versions, rel_run, [rel_md, rel_files])
+        trend_preview.click(on_trend_preview, trend_model, [trend_quote, trend_payload])
+        trend_send.click(on_trend_send, trend_model, [trend_md, trend_payload])
+        session_timer.tick(on_tick, None, session_md)
+        calibrated_button.click(on_calibrated, None, session_md)
+        break_button.click(on_break, None, session_md)
+        fresh_queue.click(on_fresh_queue, [cmp_run, cmp_extra], fresh_md)
+        fresh_pick.input(on_fresh_pick, fresh_pick, [cmp_run, fresh_md, fresh_pick])
         previous.input(on_open, previous, view)
         app.load(on_load, None, after_run)
         add.click(

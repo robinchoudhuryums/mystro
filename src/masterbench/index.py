@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from masterbench import blind, db, projects
+from masterbench import blind, db, monitoring, projects
 from masterbench.analysis.report import AnalysisReport
 from masterbench.config import Paths
 from masterbench.projects import RunManifest, Track
@@ -58,8 +58,9 @@ def _insert_analysis(
     cursor = conn.execute(
         "INSERT INTO analyses (run_id, source_path, role, sha256, sample_rate, channels, bit_depth,"
         " duration_s, lufs_i, lufs_s_max, lufs_m_max, true_peak_dbtp, sample_peak_dbfs, lra, plr,"
-        " crest_db, correlation, low_mono_corr, key, key_confidence, tempo_bpm, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " crest_db, correlation, low_mono_corr, key, key_confidence, tempo_bpm,"
+        " hook_contrast_lu, bass_in_tune_share, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             report.source_path,
@@ -82,6 +83,8 @@ def _insert_analysis(
             report.musical.key if report.musical else None,
             report.musical.key_confidence if report.musical else None,
             report.musical.tempo_bpm if report.musical else None,
+            report.sections.contrast_lu if report.sections else None,
+            report.lowend.in_tune_share if report.lowend else None,
             created_at,
         ),
     )
@@ -232,6 +235,21 @@ def sync_notes(conn: sqlite3.Connection, paths: Paths) -> int:
         return _sync_notes(conn, paths)
 
 
+def _sync_sessions(conn: sqlite3.Connection, paths: Paths) -> int:
+    conn.execute("DELETE FROM sessions")
+    sessions = monitoring.all_sessions(paths)
+    conn.executemany(
+        "INSERT INTO sessions (started_at, calibrated, minutes) VALUES (?, ?, ?)",
+        [(s.started_at, int(s.calibrated), s.minutes) for s in sessions],
+    )
+    return len(sessions)
+
+
+def sync_sessions(conn: sqlite3.Connection, paths: Paths) -> int:
+    with _transaction(conn):
+        return _sync_sessions(conn, paths)
+
+
 def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
     """Rebuild every row from the files on disk: tracks, runs, analyses, references, tests."""
     with _transaction(conn):
@@ -251,6 +269,7 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
         references = _sync_references(conn, paths)
         blind_tests = _sync_blind_tests(conn, paths)
         notes = _sync_notes(conn, paths)
+        sessions = _sync_sessions(conn, paths)
     tracks = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
     return {
         "tracks": tracks,
@@ -258,6 +277,7 @@ def reindex(conn: sqlite3.Connection, paths: Paths) -> dict[str, int]:
         "references": references,
         "blind tests": blind_tests,
         "notes": notes,
+        "sessions": sessions,
     }
 
 

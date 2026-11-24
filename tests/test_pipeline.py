@@ -205,7 +205,14 @@ def test_deleting_the_database_and_reindexing_restores_it(
         leftover.unlink()
     with index.open_index(paths) as conn:
         counts = index.reindex(conn, paths)
-    assert counts == {"tracks": 2, "runs": 3, "references": 1, "blind tests": 0, "notes": 0}
+    assert counts == {
+        "tracks": 2,
+        "runs": 3,
+        "references": 1,
+        "blind tests": 0,
+        "notes": 0,
+        "sessions": 0,
+    }
     assert dump(paths) == before
 
     with index.open_index(paths) as conn:
@@ -221,7 +228,14 @@ def test_reindex_drops_tracks_whose_folder_is_gone(
     shutil.rmtree(doomed.run_dir.parent.parent)
     with index.open_index(paths) as conn:
         counts = index.reindex(conn, paths)
-        assert counts == {"tracks": 1, "runs": 1, "references": 0, "blind tests": 0, "notes": 0}
+        assert counts == {
+            "tracks": 1,
+            "runs": 1,
+            "references": 0,
+            "blind tests": 0,
+            "notes": 0,
+            "sessions": 0,
+        }
         assert [r["slug"] for r in conn.execute("SELECT slug FROM tracks")] == ["loop"]
 
 

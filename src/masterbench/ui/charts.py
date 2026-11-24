@@ -173,3 +173,34 @@ def flag_frequency(counts: list[FlagCount], total: int) -> go.Figure:
         xaxis={"dtick": 1, "range": [0, max(total, 1)]},
     )
     return figure
+
+
+def shape_trends(points: list[TrackPoint]) -> go.Figure:
+    """How much the hook lifts, and how much of the bass is in tune, track by track."""
+    shown = [
+        p for p in points if p.hook_contrast_lu is not None or p.bass_in_tune_share is not None
+    ]
+    if not shown:
+        return _empty("No tracks with sections or bass notes measured yet.")
+    labels = [f"{p.title}<br>{p.created_at[:10]}" for p in shown]
+    figure = go.Figure()
+    figure.add_scatter(
+        x=labels,
+        y=[p.hook_contrast_lu for p in shown],
+        name="Hook minus verse (LU)",
+        mode="lines+markers",
+    )
+    figure.add_scatter(
+        x=labels,
+        y=[None if p.bass_in_tune_share is None else 100 * p.bass_in_tune_share for p in shown],
+        name="Bass in tune (%)",
+        mode="lines+markers",
+        yaxis="y2",
+    )
+    figure.update_layout(
+        **_LAYOUT,
+        title="Hook lift and bass tuning, by track",
+        yaxis={"title": "LU"},
+        yaxis2={"title": "%", "overlaying": "y", "side": "right", "range": [0, 105]},
+    )
+    return figure

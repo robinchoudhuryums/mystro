@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 6 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Next: Phase 7.
+**Status:** Phases 0 to 7 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Next: Phase 8.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -78,6 +78,27 @@ edited in place below and marked *[P0]*):
 - Sibilance and vocal consistency run on vocal stems only. On a full mix every hi-hat reads
   as sibilance, so the spec's full-mix fallback was dropped.
 - Flags can carry a start and end time; the player shows them, and sections, as jump buttons.
+
+**Decisions made in Phase 7** (marked *[P7]* below):
+- Locked processing for a Matchering master is a least-squares fit of a mid/side FIR pair
+  from the mix to the master (8192 taps), not a smoothed spectrum ratio: the ratio reached
+  only about -19 dB on the fixture, the fit about -35 dB. Curve-match masters whose chains
+  are purely linear (filters, shelves, peaks, gain) are reproduced exactly from the stored
+  EQ and gain; a chain with saturation, compression or a plugin falls back to the fit.
+- The "set error" for instrumental + a cappella against the master before limiting is
+  -25 dB (good); between -25 and -15 dB the versions are written with a warning; above
+  -15 dB with a problem flag. Versions live in `projects/<track>/versions/<run-id>/` and
+  are not runs: they are not indexed and do not appear in the player.
+- A habit is a band at least 1.5 dB the same side of its yardstick, or a flag, on at least
+  3 and at least 60% of the last 8 tracks. Confidence is the lower end of the 95% Wilson
+  interval on that share, so 3 of 3 scores 0.44 and 8 of 8 scores 0.68.
+- The trend summary sends the last 12 tracks' numbers and the detected habits, uses its own
+  versioned prompt, and shares the notes' monthly cap and spend log.
+- Listening sessions are files (`sessions/<id>.json`), one per time the UI is opened. The
+  break reminder is a UI banner plus a notification; calibration is per session.
+- MCP: read-only unless `mcp_allow_writes = true`. Read-only `analyze_file` measures
+  without storing. Files must be under the data root or `mcp_allowed_dirs`. `pitch_report`
+  waits for Phase 8.
 
 ---
 
@@ -200,22 +221,22 @@ src/masterbench/
     presets/           # natural.toml, tight.toml, hard_tune.toml
     mix_assistant.py   # vocal chain, de-esser, rider, dynamic EQ carve, sum (5.24)
   release/
-    versions.py        # instrumental / a cappella with locked processing (5.20)
-  progress.py          ✓ per-track points, recurring flags, blind-test history
-                       # still to add: habit detection, AI summary (Phase 7)
+    versions.py        ✓ instrumental / a cappella with locked processing (5.20)
+  progress.py          ✓ per-track points, recurring flags, blind-test history, habits
   blind.py             ✓ [P2] blind-test records (JSON, source of truth)
-  monitoring.py        # calibration tone, session timer, break reminders (5.21)
+  monitoring.py        ✓ calibration noise, sessions, break reminders, fresh-ears queue (5.21)
   projects.py          ✓ project and run storage, run manifests, per-track overrides
   track.py             ✓ [P6] hand-set key and sections, low-end report with stems
   batch.py             ✓ EP mode and consistency report
   watch.py             ✓ watch folder: debounce, analyze, optional auto-master, notify
-  mcp_server.py        # MCP tools over the engine (5.22)
+  mcp_server.py        ✓ MCP tools over the engine (5.22); pitch_report comes in Phase 8
   notes/
     mix_notes.py       ✓ payload, estimate and cap, API call, cache, render
     prompt.md          ✓ versioned prompt template
-    trends_prompt.md   # versioned prompt for the progress summary
+    trends.py          ✓ [P7] progress summary: payload, API call, cache
+    trends_prompt.md   ✓ versioned prompt for the progress summary
   ui/
-    app.py             ✓ Gradio Blocks app: Master, Compare, Analyze, Progress, Library
+    app.py             ✓ Gradio Blocks app: every tab in section 6 except Vocal
     player.py          ✓ [P2] player component, sources per run, blind-test saving
     charts.py          ✓ [P2] Plotly figures
     ab_player.js       ✓ synced, gain-matched A/B/C player (Web Audio)
@@ -413,8 +434,9 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - section loudness patterns
   - 808 tuning and clash history
   - blind-test results (how often Robin's own master beats the AI masters, and how often he picks the reference-closest version)
-- **Habit detection:** a rule-based pass that finds consistent biases ("sub under the target band on 7 of the last 8 tracks", "upper-mids over on most vocal-heavy tracks"), with a confidence score based on sample count.
-- Optional **AI trend summary** (numbers only, versioned prompt): "your top 3 habits, and one practice exercise for each."
+- **Habit detection:** a rule-based pass that finds consistent biases ("sub under the target band on 7 of the last 8 tracks", "upper-mids over on most vocal-heavy tracks"), with a confidence score based on sample count. *[P7]* Bands and recurring flags over the last 8 tracks; see the Phase 7 decisions. Conditional habits ("on vocal-heavy tracks") are not attempted.
+- Optional **AI trend summary** (numbers only, versioned prompt): "your top 3 habits, and one practice exercise for each." *[P7]* `masterbench trends`, and an accordion in the Progress tab.
+- *[P7]* Of the views above, section loudness shows as hook-minus-verse contrast per track and 808 tuning as the share of in-tune notes per track. Clash history is not charted (clash results are not indexed). The blind-test tally counts how often a master beat the mix; "Robin's own master versus the AI masters" and "closest to the reference" are not told apart, since runs do not record who made them.
 
 ### 5.19 Watch folder
 - Watches `~/MasterBench/Inbox/` (and optionally Robin's Logic bounce folder). The subfolder name sets the genre.
@@ -427,12 +449,12 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Locked processing:** alternate versions must get the *same* processing as the main master. Matchering is adaptive, so for these:
   - **Curve-match runs:** apply the identical matching EQ, gain and chain.
   - **Matchering runs:** derive a static transfer function (master spectrum ÷ mix spectrum, smoothed into a linear-phase FIR, plus gain) and apply it with the same limiter settings. Check that (instrumental + a cappella) before the limiter is close to the main master, and report the error.
-- Export `instrumental_24.wav` and `acapella_24.wav`, with loudness and peak reports. A cappella versions skip heavy limiting by default.
+- Export `instrumental_24.wav` and `acapella_24.wav`, with loudness and peak reports. A cappella versions skip heavy limiting by default. *[P7]* Each version gets the master's gain and a ceiling-only limiter pass; neither is pushed to the loudness target, so the two still add up to the master. 24-bit only.
 
 ### 5.21 Listening level and breaks
 - **Calibration:** play pink noise at a set reference level (e.g. −20 dBFS RMS), and guide Robin to set his monitors or headphones to a consistent level (about 75–80 dB SPL measured with a phone SPL meter app). Save "calibrated" for the session.
 - **Session timer:** remind him to take a break every 45–60 minutes (configurable), and log session length.
-- Suggest a **fresh-ears re-check**: queue a blind A/B of today's final picks for the next session.
+- Suggest a **fresh-ears re-check**: queue a blind A/B of today's final picks for the next session. *[P7]* A button in Compare queues the loaded runs; a later session lists the check in a dropdown, which loads the first run and tells Robin to add the others and start a blind test. It does not set the blind test up by itself. One pending check per track.
 
 ### 5.22 MCP server
 - `masterbench mcp` runs a stdio MCP server built on the engine. *[P0]* Use `MCPServer` from `mcp.server.mcpserver` (SDK 2.x) and give every tool a typed return so clients get structured output. Tools:
@@ -441,7 +463,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   - `master_file` (always creates a new run, never overwrites)
   - `suggest_reference`
   - `get_progress_trends`, `get_habits`
-  - `pitch_report`
+  - `pitch_report` *[P7]* not yet; it needs Phase 8
   - `run_batch`
 - Read-only by default. Tools that write need a config flag (`mcp_allow_writes`). File access is limited to `~/MasterBench` and explicitly allowed folders.
 - Document the setup for Claude Code (`claude mcp add`) and the Claude desktop app config.
@@ -558,9 +580,12 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met (all tested):** key is F minor on every pitched fixture; the detuned 808 note reads +35.0 cents against a planted +35; clipped, mono and lossy-rip references are badged poor; curve match lands within 0.25 dB of the target median in every band on pink noise; a hook only 1.3 LU over its verse is flagged, alone and against a reference or curve with 6 LU.
 - **What that does not show:** every threshold here was tuned on synthetic audio. Section detection, kind guessing, the detectors and key detection have not met a real song, and relative major/minor confusion on real beats is likely. Treat the first real results as calibration.
 
-**Phase 7: Integrations and release**
+**Phase 7: Integrations and release — DONE on fixtures (2026-11-24); no model has driven the MCP server yet**
 - **MCP server** (5.22), **alternate versions with locked processing** (5.20), **listening-level calibration and break reminders** (5.21), and **progress tracker v2** (habit detection plus AI trend summary, 5.18).
 - *Done when:* Claude Code can call `compare_runs` and `get_habits` through MCP; instrumental + a cappella before the limiter sums to within a set error of the main master on the fixture stems; and habit detection finds a deliberate bias seeded across fixture tracks.
+- **Met (tested):** on the fixture stems, instrumental + a cappella before the limiter is -34.7 dB from a Matchering master (fitted) and -38.1 dB from a curve master (exact) against a set error of -25 dB; an 8 dB sub cut seeded across five different loops is reported as "Sub is under the reference on 5 of the last 5 tracks", the same loops without the cut show no sub habit, and a fault in only two of the five is not reported. **The same cut is also reported as four other bands over**, because band levels are relative to loudness; the habit list finds the bias but does not single out its cause (see `NOTES.md`).
+- **MCP, what was and was not shown:** `compare_runs` and `get_habits` are called through the MCP SDK's client, in process and against `masterbench mcp` as a stdio subprocess (tested). The Claude Code CLI (2.1.331) registered the server with `claude mcp add` and reported it connected. **No Claude model has yet called a tool in a conversation**, and the desktop app config is untried.
+- **Untried:** the trend summary against the real API (stand-in server only, as with mix notes); the break notification on macOS; calibration with a real SPL meter; alternate versions from real Logic stems, where bus processing in Logic will make the stems differ from the bounce (flagged as `stems_differ_from_mix`).
 
 **Phase 8: Vocal tuning**
 - Pitch tracking, the pitch report, correction (retune speed, humanize, amount, formant preservation), the engine benchmark, the pitch editor, and export.

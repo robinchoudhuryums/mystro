@@ -357,6 +357,63 @@ lets them be corrected; the player has jump buttons for sections and flagged mom
 - essentia was not evaluated as an alternative key detector.
 - Stem diagnostics and low-end results are still not in the SQLite index.
 
+## Phase 7: MCP server, alternate versions, listening sessions, habits (2026-11-24)
+
+### What was built
+
+`release/versions.py` (instrumental and a cappella), habit detection in `progress.py`,
+`notes/trends.py` (AI trend summary), `monitoring.py` (calibration noise, sessions, break
+reminders, fresh-ears queue) and `mcp_server.py` (ten tools).
+New commands: `versions`, `habits`, `trends`, `calibrate`, `mcp`. New tabs: Release and
+Settings; Progress gained habits, a song-shape chart and the trend summary; Compare gained
+the fresh-ears queue. Migration 004 adds hook contrast and in-tune share to the index.
+320 tests, about 13 minutes.
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| The plan's static transfer (master spectrum over mix spectrum, smoothed) reproduces a Matchering master only to -18.7 dB. Matchering's mid and side EQs differ, and smoothing throws away what it did. | The locked process is fitted by least squares on mid and side separately (cross-spectrum over mix spectrum, 8192-tap FIR). That reaches about -35 dB. |
+| A curve-match master is EQ plus gain, both stored in `run.json`. | It is replayed exactly on each part; the remaining -38 dB before limiting is the limiter's own work, and with the same limiter on the sum the difference is under -70 dB. |
+| Saturation and compression depend on level, so no process applied to the parts separately can add up to the master. | Chains made only of filters and gain stay exact; anything else is fitted and flagged `fitted_processing`. With the `warm` post-chain the fit still reaches -30 dB. |
+| Three out of three is weak evidence. | Confidence is the Wilson lower bound: 0.44 for 3 of 3, 0.57 for 5 of 5, 0.68 for 8 of 8. |
+| Band levels are relative to integrated loudness, and on the loop the sub carries much of the loudness. An 8 dB sub cut moved the sub delta from -0.7 to -3.9 dB and every band from low-mids to presence from about +2 to about +5 dB. | **A habit list does not say which band is the cause.** The seeded cut is reported as sub under, and also as four bands over plus `mud` and `harsh` on 5 of 5, all at the same confidence. A control run of the same loops has no sub habit. See the known gaps. |
+| MCP SDK 2.x turns an unexpected exception into "Error executing tool" plus a traceback. | Engine errors the user can act on are re-raised as `ToolError` with the engine's own message. |
+| The fixture loop cannot be pushed to -10 LUFS within the limiter's 6 dB budget; it lands near -10.5. | Nothing changed; the run carries `off_target` and `heavy_limiting`. Noted because a test assumed otherwise. |
+
+### Measurements
+
+| Check | Result |
+|---|---|
+| Instrumental + a cappella vs master, before limiting, Matchering run | -34.7 dB (set error: -25 dB) |
+| The same, curve-match run | -38.1 dB; with a linear pre-chain -46.6 dB; with a saturating post-chain (fitted) -30.3 dB |
+| Calibration noise | -20.00 dBFS RMS, over 99% of its power between 500 Hz and 2 kHz |
+| `compare_runs` reply | under 3 kB of JSON; `get_analysis` under 12 kB |
+
+### Known gaps
+
+- **No Claude model has called the MCP tools in a conversation.** The SDK client has, in
+  process and over stdio, and `claude mcp list` reports the server connected.
+- The trend summary, like the mix notes, has only met a stand-in for the API.
+- Versions are files beside the project, not runs: not indexed, not in the player, 24-bit
+  only, and remade from scratch each time.
+- Stems exported from Logic through a processed mix bus will not add up to the bounce. The
+  tool reports by how much and carries on; the versions are then only as close as that.
+- **One cause can show up as several habits.** A cut in the band that carries the loudness
+  reads as that band under and the others over (see the findings). The list is ordered by
+  confidence, then count, then name, so the cause is not necessarily first. Worth a rethink
+  once there are real tracks: for example judging bands after removing the overall tilt.
+- The fixture loops already sit about 2 dB over the fixture reference from low-mids to
+  presence, so those four habits appear in the control too. That is the fixtures, not a
+  detection fault, but it means the seeded test shows one new habit among existing ones.
+- Habits are unconditional. "Over on vocal-heavy tracks" is out of reach until stem
+  results are indexed. The yardstick can differ between tracks (curve for some, a single
+  reference for others); the statement then says "the comparison".
+- Sessions measure how long the UI was open, not how long anyone listened. Closing the
+  tab ends the count at the last minute tick.
+- The Settings tab shows settings; it does not edit them. `settings.toml` is edited by hand.
+- `launchd/` (LaunchAgent for the watch folder) is still not written.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -382,6 +439,14 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 6a. **AI notes:** run `masterbench notes RUN_ID --payload` to see what would be sent, then
    without `--payload` once a key is set. This is the first live call.
 6b. **Quick Action:** follow `quick_action/README.md`.
+6d. **MCP from Claude Code:** `claude mcp add masterbench -- uv run --project "$PWD" masterbench mcp`,
+   then ask it to compare two runs and to list your habits. This is the first time a model
+   uses the tools.
+6e. **Alternate versions from real stems:** `masterbench versions RUN_ID` after
+   `masterbench stems import`. Check the reported "stems versus bounce" figure first; if it
+   is poor, export the stems with the mix-bus processing off or printed.
+6f. **Calibration and breaks:** `masterbench calibrate` with a phone SPL meter, and whether
+   the break notification appears after 50 minutes with the UI open.
 7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while

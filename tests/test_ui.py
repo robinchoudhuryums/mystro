@@ -121,15 +121,17 @@ def test_analysis_and_progress_views_build(
     )
     with index.open_index(paths) as conn:
         index.sync_blind_tests(conn, paths)
-    trends, loudness_trends, flag_plot, rows = app.progress_view(paths)
+    habits, trends, loudness_trends, shape, flag_plot, rows = app.progress_view(paths, settings)
+    assert habits.startswith("### Habits") and "preferred version: Master 1" in habits
     assert len(trends.data) == 7 and len(loudness_trends.data) == 3
     assert rows[0][1:] == ["loop", "Master", "Master > Mix"]
     assert list(flag_plot.data[0].y) == ["bass detuned"], "the loop's planted detuned note"
 
 
-def test_empty_progress_view_explains_itself(paths: Paths) -> None:
-    trends, loudness_trends, flag_plot, rows = app.progress_view(paths)
+def test_empty_progress_view_explains_itself(paths: Paths, settings: Settings) -> None:
+    habits, trends, _, _, _, rows = app.progress_view(paths, settings)
     assert rows == [] and "No tracks" in trends.layout.annotations[0].text
+    assert "need at least 3 analyzed tracks; there are 0" in habits
 
 
 def test_stems_reach_the_player_and_the_rebalance_table(

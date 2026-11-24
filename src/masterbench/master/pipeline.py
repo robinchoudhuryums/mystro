@@ -129,6 +129,19 @@ def _compare(
     return report
 
 
+def measure(
+    source: Path, paths: Paths, settings: Settings, genre: str | None = None
+) -> dict[str, AnalysisReport]:
+    """Analyze a mix against its genre's reference and curve without storing anything."""
+    audio, info = audio_io.load(source)
+    mix = analysis.analyze_audio(audio, info, source, "mix", settings)
+    reference = _genre_default(paths, genre)
+    reports = {"mix": _compare(mix, reference, target_curve.load(paths, genre), settings, genre)}
+    if reference is not None:
+        reports["reference"] = reference.report
+    return reports
+
+
 def analyze(
     source: Path,
     paths: Paths,

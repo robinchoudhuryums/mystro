@@ -11,6 +11,8 @@ from masterbench.analysis.lowend import LowEnd
 from masterbench.analysis.report import AnalysisReport
 from masterbench.batch import BatchResult
 from masterbench.master.pipeline import RunResult
+from masterbench.progress import Habit
+from masterbench.release.versions import Versions
 from masterbench.stems.workflow import Diagnosis
 
 _ROLES = ("mix", "master", "reference")
@@ -342,3 +344,116 @@ def lowend_markdown(found: LowEnd | None) -> str:
     if found is None:
         return ""
     return "**Low end**\n\n```\n" + lowend_text(found) + "\n```"
+
+
+def versions_text(found: Versions, folder: Path) -> str:
+    """The alternate versions with their levels, and how well they add up to the master."""
+    how = {
+        "exact": "the master's stored EQ and gain, applied exactly",
+        "fitted": "one fixed filter fitted to what the master did to the mix",
+    }[found.method]
+    lines = [f"Processing: {how}."]
+    for version in found.versions:
+        lines.append(
+            f"{version.name:<13} {version.lufs_i:6.1f} LUFS  {version.true_peak_dbtp:+6.1f} dBTP  "
+            f"limiter {version.limiter_reduction_db:.1f} dB  {folder / version.file}"
+        )
+    lines.append(
+        f"Instrumental + a cappella is within {found.sum_error_db:.0f} dB of the master "
+        f"(the more negative, the closer)."
+    )
+    lines += [flag_line(flag) for flag in found.flags]
+    return "\n".join(lines)
+
+
+def versions_markdown(found: Versions) -> str:
+    lines = ["| Version | LUFS-I | True peak | Limiter |", "|---|---|---|---|"]
+    lines += [
+        f"| {v.name} | {v.lufs_i:.1f} | {v.true_peak_dbtp:+.1f} dBTP "
+        f"| {v.limiter_reduction_db:.1f} dB |"
+        for v in found.versions
+    ]
+    lines += [
+        "",
+        f"Instrumental + a cappella is within **{found.sum_error_db:.0f} dB** of the master "
+        f"(the more negative, the closer). Stems: `{found.stem_set}`.",
+        "",
+        *[f"- {flag_line(flag)}" for flag in found.flags],
+    ]
+    return "\n".join(lines)
+
+
+def habits_text(habits: list[Habit], considered: int) -> str:
+    if considered < 3:
+        verb = "is" if considered == 1 else "are"
+        return f"Habits need at least 3 analyzed tracks; there {verb} {considered}."
+    if not habits:
+        return f"No consistent habits across the last {considered} tracks."
+    lines = [f"Across the last {considered} tracks:"]
+    for habit in habits:
+        lines.append(f"- {habit.statement} (confidence {habit.confidence:.0%})")
+        lines.append(f"    e.g. {', '.join(habit.examples)}")
+    lines.append("")
+    lines.append(
+        "Confidence is the lower bound of a 95% interval on the share of tracks, so it "
+        "grows as more tracks show the same thing."
+    )
+    return "\n".join(lines)
+
+
+def release_checklist(
+    result: RunResult, target_lufs: float, ceiling_dbtp: float
+) -> list[tuple[bool | None, str]]:
+    """Final checks before release. Each item is (passed, text); None means not checked yet."""
+    from masterbench.preview import speakers, streaming
+
+    master = result.reports.get("master")
+    if master is None:
+        return [(False, "This run has no master yet.")]
+    loud = master.loudness
+    wanted = result.manifest.settings.get("target_lufs")
+    target = target_lufs if wanted is None else wanted
+    ceiling = result.manifest.settings.get("ceiling_dbtp", ceiling_dbtp)
+    items: list[tuple[bool | None, str]] = [
+        (
+            abs(loud.lufs_i - target) <= 0.5,
+            f"Loudness {loud.lufs_i:.1f} LUFS (target {target:.1f}).",
+        ),
+        (
+            loud.true_peak_dbtp <= ceiling + 0.05,
+            f"True peak {loud.true_peak_dbtp:+.2f} dBTP (ceiling {ceiling:+.1f}).",
+        ),
+    ]
+    problems = [f for f in master.flags if f.severity == "problem"]
+    warnings = [f for f in master.flags if f.severity == "warn"]
+    items.append(
+        (not problems, f"{len(problems)} problem(s) and {len(warnings)} warning(s) on the master.")
+    )
+    preview = streaming.load(result)
+    if preview is None:
+        items.append((None, "Streaming previews not rendered: encoded peaks are unchecked."))
+    else:
+        worst = max((c.true_peak_dbtp for c in preview.codecs), default=loud.true_peak_dbtp)
+        items.append((worst < 0, f"Highest true peak after encoding: {worst:+.2f} dBTP."))
+        normal = next(p for p in preview.platforms if p.platform == "Spotify Normal")
+        items.append((abs(normal.gain_db) <= 1.0, normal.message))
+    stereo = master.stereo
+    if stereo is not None:
+        items.append(
+            (stereo.correlation >= 0, f"Mono compatibility: correlation {stereo.correlation:+.2f}.")
+        )
+    sims = speakers.load(result)
+    items.append(
+        (
+            None if sims is None else True,
+            "Speaker sims rendered: listen to phone and mono."
+            if sims
+            else "Speaker sims not rendered yet.",
+        )
+    )
+    return items
+
+
+def checklist_markdown(items: list[tuple[bool | None, str]]) -> str:
+    marks = {True: "✔", False: "✖", None: "•"}
+    return "\n".join(f"- {marks[passed]} {text}" for passed, text in items)

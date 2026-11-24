@@ -76,6 +76,8 @@ class Thresholds:
     reference_min_s: float = 45.0
     reference_low_crest_db: float = 6.0
     lossy_cutoff_hz: float = 19500.0
+    habit_band_db: float = 1.5
+    habit_share: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,8 @@ class Settings:
     watch_stable_s: float = 2.0
     ui_port: int = 7860
     mcp_allow_writes: bool = False
+    mcp_allowed_dirs: tuple[str, ...] = ()
+    spl_target_db: float = 78.0
     break_interval_min: int = 50
 
 
@@ -198,6 +202,10 @@ def _merge(instance: Any, overrides: dict[str, Any], where: str) -> Any:
             if not isinstance(value, dict):
                 raise ValueError(f"setting {where}{key} must be a table")
             changes[key] = _merge(current, value, f"{where}{key}.")
+        elif isinstance(current, tuple):
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"setting {where}{key} must be a list of strings")
+            changes[key] = tuple(value)
         elif isinstance(value, bool) != isinstance(current, bool) or not isinstance(
             value, (int, float) if isinstance(current, float) else type(current)
         ):

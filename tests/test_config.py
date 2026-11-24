@@ -76,3 +76,19 @@ def test_index_stays_local_when_the_data_root_is_synced(
     assert synced.references == tmp_path / folder / "references", "audio still syncs"
     local = config.Paths(tmp_path / "MasterBench")
     assert not local.synced and local.db == tmp_path / "MasterBench" / "masterbench.db"
+
+
+def test_list_settings_are_read_from_toml(data_root: Path) -> None:
+    data_root.mkdir()
+    (data_root / "settings.toml").write_text(
+        'mcp_allow_writes = true\nmcp_allowed_dirs = ["~/Music/Bounces", "/Volumes/Audio"]\n'
+        "[thresholds]\nhabit_band_db = 2\n",
+        encoding="utf-8",
+    )
+    settings = config.load_settings()
+    assert settings.mcp_allow_writes is True
+    assert settings.mcp_allowed_dirs == ("~/Music/Bounces", "/Volumes/Audio")
+    assert settings.thresholds.habit_band_db == 2.0
+    (data_root / "settings.toml").write_text('mcp_allowed_dirs = "~/Music"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a list of strings"):
+        config.load_settings()
