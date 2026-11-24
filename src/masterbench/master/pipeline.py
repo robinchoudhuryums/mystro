@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -12,7 +13,7 @@ from masterbench.analysis import report as analysis
 from masterbench.analysis.flags import Flag
 from masterbench.analysis.report import AnalysisReport
 from masterbench.config import Paths, Settings
-from masterbench.master import limiter, matchering_engine
+from masterbench.master import chain, limiter, matchering_engine, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.projects import RunManifest
 from masterbench.references import library
@@ -28,6 +29,8 @@ class MasterOptions:
     ceiling_dbtp: float
     genre: str | None = None
     title: str | None = None
+    pre_chain: str | None = None
+    post_chain: str | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings, reference: str, **overrides) -> MasterOptions:
@@ -129,7 +132,12 @@ def master(
     settings: Settings,
     progress: ProgressFn = _noop,
 ) -> RunResult:
-    """Master a mix against a reference. Always creates a new run; the input is never changed."""
+    """Master a mix against a reference. Always creates a new run; the input is never changed.
+
+    Order: pre-chain, Matchering (its limiter off), post-chain, then loudness and the
+    true-peak limiter. The final limiter always runs last, so nothing is limited twice by
+    accident and the ceiling holds whatever the chains do.
+    """
     started = time.perf_counter()
     progress("Validating the mix", 0.05)
     reference = library.resolve(paths, options.reference, settings)
@@ -143,8 +151,19 @@ def master(
         audio, info, project.input_path, "mix", settings, project.input_sha256
     )
 
-    progress("Matching to the reference", 0.2)
-    matched = matchering_engine.match(project.input_path, reference.path, info.sample_rate)
+    pre = presets.get(paths, options.pre_chain) if options.pre_chain else None
+    post = presets.get(paths, options.post_chain) if options.post_chain else None
+    with tempfile.TemporaryDirectory(prefix="masterbench-") as tmp:
+        target = project.input_path
+        if pre is not None:
+            progress(f"Running the pre-chain ({pre.name})", 0.12)
+            processed = chain.run(pre, audio, info.sample_rate)
+            target = audio_io.save_wav(Path(tmp) / "pre_chain.wav", processed, info.sample_rate, 32)
+        progress("Matching to the reference", 0.2)
+        matched = matchering_engine.match(target, reference.path, info.sample_rate)
+    if post is not None:
+        progress(f"Running the post-chain ({post.name})", 0.5)
+        matched = chain.run(post, matched, info.sample_rate)
 
     progress("Setting loudness and limiting", 0.55)
     final = limiter.finalize(matched, info.sample_rate, options.target_lufs, options.ceiling_dbtp)
@@ -163,6 +182,8 @@ def master(
             "reference": _reference_settings(reference),
             "target_lufs": options.target_lufs,
             "ceiling_dbtp": options.ceiling_dbtp,
+            "pre_chain": pre.to_dict() if pre else None,
+            "post_chain": post.to_dict() if post else None,
         },
         outputs={"master_24": "master_24.wav", "master_16": "master_16.wav"},
         lib_versions=projects.lib_versions(),

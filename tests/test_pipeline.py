@@ -83,6 +83,8 @@ def test_run_manifest_records_what_is_needed_to_reproduce(
         },
         "target_lufs": -14.0,
         "ceiling_dbtp": -1.0,
+        "pre_chain": None,
+        "post_chain": None,
     }
     assert {"masterbench", "matchering", "numpy", "scipy"} <= set(manifest["lib_versions"])
     analysis = json.loads((result.run_dir / "analysis.json").read_text())

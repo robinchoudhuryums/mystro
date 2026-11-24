@@ -11,14 +11,16 @@ from typing import Annotated
 import typer
 
 from masterbench import audio_io, config, fixtures, index, summary
-from masterbench.master import pipeline
+from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.preview import streaming
 from masterbench.references import library
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="MasterBench")
 ref_app = typer.Typer(no_args_is_help=True, help="Manage the genre reference library.")
+preset_app = typer.Typer(no_args_is_help=True, help="Manage chain presets.")
 app.add_typer(ref_app, name="ref")
+app.add_typer(preset_app, name="preset")
 
 AudioFile = Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]
 ENGINE_ERRORS = (
@@ -26,6 +28,7 @@ ENGINE_ERRORS = (
     library.ReferenceError,
     audio_io.AudioError,
     streaming.PreviewError,
+    chain.ChainError,
     LookupError,
 )
 
@@ -83,6 +86,10 @@ def master(
         bool, typer.Option("--match-loudness", help="Keep the reference's loudness; no target.")
     ] = False,
     title: Annotated[str | None, typer.Option(help="Track title; groups takes of a song.")] = None,
+    pre: Annotated[str | None, typer.Option(help="Chain preset to run before matching.")] = None,
+    post: Annotated[
+        str | None, typer.Option("--post", "--preset", help="Chain preset to run after matching.")
+    ] = None,
 ) -> None:
     """Master a mix against a reference. Writes a new run and prints a summary."""
     paths, settings = config.get_paths(), config.load_settings()
@@ -94,6 +101,8 @@ def master(
         ceiling_dbtp=_or(ceiling, settings.targets.true_peak_dbtp),
         genre=genre,
         title=title,
+        pre_chain=pre,
+        post_chain=post,
     )
     try:
         result = pipeline.master(mix, options, paths, settings, _progress)
@@ -256,3 +265,69 @@ def ref_remove(genre: str, name: str) -> None:
     with index.open_index(paths) as conn:
         index.sync_references(conn, paths)
     typer.echo(f"removed {genre}/{name}")
+
+
+@preset_app.command("list")
+def preset_list() -> None:
+    """List chain presets (yours and the packaged ones)."""
+    paths = config.get_paths()
+    for name in presets.names(paths):
+        preset = presets.get(paths, name)
+        steps = " > ".join(module.type for module in preset.modules)
+        typer.echo(f"{name:<18} {steps}")
+        if preset.description:
+            typer.echo(f"{'':<18} {preset.description}")
+
+
+@preset_app.command("show")
+def preset_show(name: str) -> None:
+    """Print a preset's TOML."""
+    try:
+        typer.echo(presets.text(config.get_paths(), name).rstrip())
+    except chain.ChainError as exc:
+        raise _fail(exc) from exc
+
+
+@preset_app.command("add-plugin")
+def preset_add_plugin(
+    name: Annotated[str, typer.Argument(help="Preset to append to; created if missing.")],
+    plugin: Annotated[Path, typer.Argument(exists=True, help="A .vst3 or .component bundle.")],
+    plugin_name: Annotated[
+        str | None, typer.Option(help="Plugin inside a shell bundle, e.g. a Waves plugin.")
+    ] = None,
+) -> None:
+    """Append a plugin, with its current parameters and state, to a preset."""
+    paths = config.get_paths()
+    try:
+        modules = presets.get(paths, name).modules if name in presets.names(paths) else ()
+        description = presets.get(paths, name).description if modules else ""
+        module = chain.capture_plugin(plugin, plugin_name)
+        saved = presets.save(paths, chain.ChainPreset(name, description, (*modules, module)))
+    except chain.ChainError as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"{saved}: {len(module.params['parameters'])} parameters captured")
+
+
+@app.command()
+def plugins(
+    params: Annotated[
+        Path | None, typer.Option(exists=True, help="Show this plugin's parameters instead.")
+    ] = None,
+    plugin_name: Annotated[str | None, typer.Option(help="Plugin inside a shell bundle.")] = None,
+) -> None:
+    """List the VST3 and AU plugins found in the standard folders."""
+    if params is not None:
+        try:
+            listed = chain.plugin_parameters(params, plugin_name)
+        except chain.ChainError as exc:
+            raise _fail(exc) from exc
+        for p in listed:
+            bounds = f"{p['min']:g} to {p['max']:g}" if p["min"] is not None else ""
+            typer.echo(f"{p['name']:<28} {p['value']!s:<14} {bounds} {p['units'] or ''}".rstrip())
+        return
+    found = chain.scan_plugins()
+    if not found:
+        typer.echo(f"no plugins in {', '.join(str(d) for d in chain.plugin_dirs())}")
+    for info in found:
+        inside = f"  [{', '.join(info.names)}]" if len(info.names) > 1 else ""
+        typer.echo(f"{info.format:<5} {info.path}{inside}")

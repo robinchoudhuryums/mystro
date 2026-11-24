@@ -1,0 +1,5 @@
+description = "Clears inaudible rumble below 25 Hz so the limiter has more room. A safe default post-chain."
+
+[[module]]
+type = "highpass"
+cutoff_hz = 25.0

@@ -178,12 +178,52 @@ this fixture, and the preview then suggests a -1.5 dBTP ceiling.
 - Runs made in Phase 1 have no stored spectrum; the Analyze tab says so and a new
   `analyze` or `master` run fills it in.
 
+## Phase 3: chains and plugins (2026-11-24)
+
+### What was built
+
+`master/chain.py` and `master/presets.py`, three packaged presets (`streaming-safe`,
+`gentle-glue`, `warm`), `--pre` / `--post` (alias `--preset`) on `master`,
+`masterbench preset list|show|add-plugin`, `masterbench plugins`, chain pickers on the
+Master tab and a preset editor with plugin scan in the Library tab. 172 tests pass.
+
+### Findings
+
+Plugin hosting was tested for real with free VST3s (`zam-plugins`, `dragonfly-reverb-vst3`
+from the Ubuntu archive), which the Phase 0 spike had to skip.
+
+| Finding | Consequence |
+|---|---|
+| `load_plugin`, `.parameters` (min, max, units), `.raw_state` and processing all work headless. Output was bit-identical between two fresh instances of each stereo plugin tried. | A preset stores `path`, `parameters` and base64 `state`; reloading reproduces the audio within 1e-6. |
+| Mono-only plugins (ZamComp, ZamEQ2, ZamTube) raise `ValueError` on stereo input. | The chain runs them once per channel (dual mono). |
+| ZamEQ2 returns NaN at its own default settings. | Every stage's output is checked; NaN or infinity stops the chain with a clear error instead of reaching the limiter. |
+| DPF-based plugins expose host values (`buffer_size_frames`, `sample_rate_frames`) as parameters. | They are captured like any other parameter; setting them back was harmless here. |
+| Scanning loads each bundle to read its names, and some plugins print to stderr while loading. | Scanning is on demand (button or `masterbench plugins`), never at startup. |
+| Pedalboard's compressor with a 1 ms attack raises the crest factor of the 808 loop: the click passes, the body is squashed. | Expected behaviour, noted because the packaged `gentle-glue` uses a 30 ms attack for that reason. |
+
+### Decisions
+
+- The packaged presets are starting points made up for this project, not tuned by ear.
+- Preset names are restricted to `[a-z0-9_-]`, so a name can never leave the presets folder.
+- The full resolved preset (modules and plugin state) is written into `run.json`, so a run
+  stays reproducible after the preset file changes.
+- Built-in modules run in float32 inside Pedalboard; the pipeline converts back to float64.
+
+### Known gaps
+
+- Robin's own plugins, Audio Units and Waves WaveShell are untested (no macOS, no licences).
+- No slider UI for plugin parameters and no native editor window.
+- A hosted plugin's reported latency is left to Pedalboard; only length preservation is
+  checked. A plugin with lookahead that Pedalboard does not compensate would shift the audio.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
 
-1. **Plugin hosting:** `load_plugin` on one AU and one VST3, parameter listing, and Waves
-   through its WaveShell (`plugin_name`). The check picks the first plugin it can load.
+1. **Plugin hosting with your plugins:** VST3 hosting is verified on Linux with free
+   plugins. Still to check: an Audio Unit, one of your own plugins in a preset round trip
+   (`masterbench preset add-plugin NAME /path/to/Plugin.vst3`, then master twice and compare),
+   and Waves through its WaveShell (`--plugin-name`).
 2. **Homebrew ffmpeg encoders:** `libvorbis`, `libopus`, and whether `aac_at` (AudioToolbox,
    closer to Apple's encoder) is present. The codec check prefers `aac_at` when it exists.
 3. **Source builds:** `pyworld` and `diffq` have no macOS arm64 wheels for Python 3.12, so

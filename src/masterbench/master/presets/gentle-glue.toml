@@ -1,0 +1,17 @@
+description = "Light bus compression and a touch of air. A starting point, not a recipe."
+
+[[module]]
+type = "highpass"
+cutoff_hz = 25.0
+
+[[module]]
+type = "compressor"
+threshold_db = -16.0
+ratio = 1.5
+attack_ms = 30.0
+release_ms = 150.0
+
+[[module]]
+type = "high_shelf"
+freq_hz = 10000.0
+gain_db = 0.5

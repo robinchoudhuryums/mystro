@@ -87,3 +87,24 @@ def test_watch_once_processes_the_inbox(data_root: Path, fx: dict[str, Path], mo
     assert result.exit_code == 0, result.output
     assert "Analyzed: Hook idea: Mix: -17.1 LUFS" in result.stdout
     assert len(list(data_root.glob("projects/hook-idea/runs/*/run.json"))) == 1
+
+
+def test_presets_and_chains_from_the_command_line(data_root: Path, fx: dict[str, Path]) -> None:
+    listed = runner.invoke(app, ["preset", "list"])
+    assert (
+        listed.exit_code == 0
+        and "gentle-glue        highpass > compressor > high_shelf" in listed.stdout
+    )
+    shown = runner.invoke(app, ["preset", "show", "warm"])
+    assert 'type = "saturation"' in shown.stdout
+    assert runner.invoke(app, ["preset", "show", "nope"]).exit_code == 1
+
+    runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+    mastered = runner.invoke(
+        app, ["master", str(fx["loop"]), "--pre", "streaming-safe", "--preset", "warm"]
+    )
+    assert mastered.exit_code == 0, mastered.output
+    assert "Running the post-chain (warm)" in mastered.output
+    broken = runner.invoke(app, ["master", str(fx["loop"]), "--post", "nope"])
+    assert broken.exit_code == 1 and "no chain preset named 'nope'" in broken.output
+    assert runner.invoke(app, ["plugins"]).exit_code == 0

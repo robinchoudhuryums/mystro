@@ -22,6 +22,7 @@ dependencies = [
     "scipy",
     "setuptools<81",
     "soundfile",
+    "tomli-w>=1.2.0",
     "typer",
     "watchdog",
 ]

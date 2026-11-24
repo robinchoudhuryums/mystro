@@ -1,0 +1,11 @@
+description = "Parallel saturation and a small low shelf. Adds harmonics that help 808s read on small speakers."
+
+[[module]]
+type = "low_shelf"
+freq_hz = 90.0
+gain_db = 1.0
+
+[[module]]
+type = "saturation"
+drive_db = 6.0
+mix = 0.4

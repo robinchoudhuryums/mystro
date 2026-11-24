@@ -6,9 +6,10 @@ the machine; the opt-in AI notes send numbers only.
 - `HANDOFF.md` is the plan: goals, feature specs, phases and acceptance criteria.
 - `NOTES.md` records working versions, API differences and what is still unverified.
 
-**Status:** Phases 0 to 2 are done: mastering against a reference, loudness, frequency
-balance and stereo analysis, streaming previews, a level-matched A/B/C player with blind
-tests, a progress view, the reference library and the watch folder. Phase 3 is next.
+**Status:** Phases 0 to 3 are done: mastering against a reference, processing chains with
+hosted VST3/AU plugins, loudness, frequency balance and stereo analysis, streaming
+previews, a level-matched A/B/C player with blind tests, a progress view, the reference
+library and the watch folder. Phase 4 (stems) is next.
 
 ## Setup (macOS)
 
@@ -56,6 +57,19 @@ Analyze bounces as they land in `~/MasterBench/Inbox/<genre>/`:
 ```bash
 uv run masterbench watch
 ```
+
+Run a chain before or after matching, and build one around a plugin:
+
+```bash
+uv run masterbench master ~/Music/Bounces/song.wav --pre streaming-safe --post warm
+```
+
+```bash
+uv run masterbench preset add-plugin my-chain "/Library/Audio/Plug-Ins/VST3/Some Plugin.vst3"
+```
+
+`masterbench preset list` shows the presets, `masterbench plugins` the plugins found. Presets
+are TOML files in `~/MasterBench/presets/chains/`.
 
 See what the codecs and Spotify's normalization do to a master:
 
@@ -112,7 +126,7 @@ src/masterbench/
   audio_io.py       load, save (TPDF dither), hashing
   validate.py       pre-flight checks on a mix
   analysis/         loudness, spectrum, stereo, flags, AnalysisReport
-  master/           Matchering wrapper, true-peak limiter, pipeline
+  master/           Matchering wrapper, chains and presets, true-peak limiter, pipeline
   references/       genre reference library
   projects.py       projects, runs, manifests
   db.py, index.py   SQLite migrations, indexing, reindex

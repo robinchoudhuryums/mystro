@@ -9,7 +9,7 @@ import gradio as gr
 from masterbench import audio_io, index, progress, summary
 from masterbench.analysis.compare import BAND_LABELS
 from masterbench.config import Paths, Settings
-from masterbench.master import pipeline
+from masterbench.master import chain, pipeline, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.master.pipeline import MasterOptions, RunResult
 from masterbench.preview import streaming
@@ -24,6 +24,7 @@ ENGINE_ERRORS = (
     library.ReferenceError,
     audio_io.AudioError,
     streaming.PreviewError,
+    chain.ChainError,
     LookupError,
 )
 NO_REFERENCES = (
@@ -45,6 +46,10 @@ def reference_choices(paths: Paths, genre: str | None) -> tuple[list[tuple[str, 
     refs = sorted(library.list_references(paths, genre), key=lambda r: (not r.is_default, r.name))
     choices = [(f"{r.name} (default)" if r.is_default else r.name, r.spec) for r in refs]
     return choices, choices[0][1] if choices else None
+
+
+def preset_choices(paths: Paths) -> list[tuple[str, str]]:
+    return [("None", ""), *[(name, name) for name in presets.names(paths)]]
 
 
 def run_choices(paths: Paths) -> list[tuple[str, str]]:
@@ -186,6 +191,13 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     ceiling = gr.Number(
                         label="True-peak ceiling (dBTP)", value=settings.targets.true_peak_dbtp
                     )
+                with gr.Accordion("Chains", open=False):
+                    pre_chain = gr.Dropdown(
+                        label="Before matching", choices=preset_choices(paths), value=""
+                    )
+                    post_chain = gr.Dropdown(
+                        label="After matching", choices=preset_choices(paths), value=""
+                    )
                 run = gr.Button("Master", variant="primary")
                 analyze = gr.Button("Analyze only")
             with gr.Column(scale=2):
@@ -244,6 +256,30 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                     new_default = gr.Checkbox(label="Make it the genre default")
                     add = gr.Button("Add reference", variant="primary")
             library_status = gr.Markdown()
+            gr.Markdown("### Chain presets")
+            with gr.Row():
+                with gr.Column(scale=2):
+                    preset_pick = gr.Dropdown(
+                        label="Preset", choices=presets.names(paths), value=None
+                    )
+                    preset_text = gr.Code(label="TOML", language=None, lines=14)
+                    with gr.Row():
+                        preset_name = gr.Textbox(label="Save as", scale=2)
+                        preset_save = gr.Button("Save preset", variant="primary", scale=1)
+                    preset_status = gr.Markdown(
+                        "Modules: " + ", ".join(chain.BUILTIN) + ", plugin. "
+                        "The final true-peak limiter always runs after the post-chain."
+                    )
+                with gr.Column(scale=2):
+                    plugin_scan = gr.Button("Scan plugins")
+                    plugin_table = gr.Dataframe(
+                        headers=["Format", "Path", "Plugins inside"],
+                        type="array",
+                        interactive=False,
+                    )
+                    plugin_path = gr.Textbox(label="Plugin path")
+                    plugin_inner = gr.Textbox(label="Plugin name inside a shell (optional)")
+                    plugin_add = gr.Button("Append this plugin to the preset")
 
         view = [result_md, flags_md, mix_player, master_player, ref_player, downloads]
 
@@ -258,10 +294,19 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             choices, value = reference_choices(paths, selected)
             return gr.Dropdown(choices=choices, value=value)
 
-        def on_master(uploaded, run_id, selected_genre, spec, lufs, peak, progress=gr.Progress()):
+        def on_master(
+            uploaded, run_id, selected_genre, spec, lufs, peak, pre, post, progress=gr.Progress()
+        ):
             if not spec:
                 raise gr.Error("Add a reference in the Library tab first.")
-            options = MasterOptions(spec, lufs, peak, genre=selected_genre)
+            options = MasterOptions(
+                spec,
+                lufs,
+                peak,
+                genre=selected_genre,
+                pre_chain=pre or None,
+                post_chain=post or None,
+            )
             try:
                 result = pipeline.master(
                     source_file(uploaded, run_id),
@@ -377,9 +422,51 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
         def refresh_runs(current: str | None):
             return gr.Dropdown(choices=run_choices(paths), value=current)
 
+        def on_preset_pick(name: str | None):
+            if not name:
+                return gr.skip(), gr.skip()
+            return presets.text(paths, name), name
+
+        def on_preset_save(name: str, toml_text: str):
+            try:
+                saved = presets.save_text(paths, (name or "").strip(), toml_text or "")
+            except chain.ChainError as exc:
+                raise gr.Error(str(exc)) from exc
+            listed = preset_choices(paths)
+            steps = " > ".join(module.type for module in saved.modules) or "empty"
+            return (
+                f"Saved **{saved.name}**: {steps}.",
+                gr.Dropdown(choices=presets.names(paths), value=saved.name),
+                gr.Dropdown(choices=listed),
+                gr.Dropdown(choices=listed),
+            )
+
+        def on_plugin_scan():
+            return [[p.format, str(p.path), ", ".join(p.names)] for p in chain.scan_plugins()]
+
+        def on_plugin_add(toml_text: str, path: str, inner: str):
+            if not path:
+                raise gr.Error("Enter a plugin path (copy one from the scan).")
+            try:
+                current = presets.from_toml(toml_text or "", "draft")
+                module = chain.capture_plugin(Path(path.strip()), inner.strip() or None)
+            except chain.ChainError as exc:
+                raise gr.Error(str(exc)) from exc
+            draft = chain.ChainPreset("draft", current.description, (*current.modules, module))
+            return presets.to_toml(draft)
+
         genre.change(on_genre, genre, reference)
+        preset_pick.input(on_preset_pick, preset_pick, [preset_text, preset_name])
+        preset_save.click(
+            on_preset_save,
+            [preset_name, preset_text],
+            [preset_status, preset_pick, pre_chain, post_chain],
+        )
+        plugin_scan.click(on_plugin_scan, None, plugin_table)
+        plugin_add.click(on_plugin_add, [preset_text, plugin_path, plugin_inner], preset_text)
         after_run = [*view, previous, cmp_run, an_run]
-        run.click(on_master, [mix, previous, genre, reference, target, ceiling], after_run)
+        master_inputs = [mix, previous, genre, reference, target, ceiling, pre_chain, post_chain]
+        run.click(on_master, master_inputs, after_run)
         analyze.click(on_analyze, [mix, previous, genre], after_run)
         cmp_run.change(on_compare_run, cmp_run, [ab_player, cmp_extra, stream_md])
         cmp_extra.input(on_compare_extra, [cmp_run, cmp_extra], ab_player)

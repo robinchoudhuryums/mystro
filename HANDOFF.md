@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0, 1 and 2 done (2026-11-24). Next: Phase 3.
+**Status:** Phases 0 to 3 done (2026-11-24), Phase 3 with free plugins rather than Robin's. Next: Phase 4.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -35,6 +35,14 @@ edited in place below and marked *[P0]*):
 - Platform normalization is reported as numbers and messages, not rendered as audio.
 - Blind tests are JSON files under `projects/<slug>/blind_tests/`, indexed like runs.
 - Timestamps carry milliseconds so runs made in the same second keep their order.
+
+**Decisions made in Phase 3** (marked *[P3]* below):
+- Presets are TOML with `[[module]]` tables. Built-in modules are validated against fixed
+  ranges; a `plugin` module stores the bundle path, its parameters and its opaque state.
+- Order in a master: pre-chain, Matchering, post-chain, loudness and true-peak limiter. The
+  final limiter always runs, so a chain's own limiter is optional.
+- The UI edits presets as TOML text and can append a scanned plugin with its current
+  parameters. Per-parameter sliders are not built.
 
 ---
 
@@ -133,10 +141,10 @@ src/masterbench/
     matchering_engine.py  ✓ wrapper around mg.process with our options
     limiter.py         ✓ [P1] lookahead true-peak limiter and loudness targeting
     curve_match.py     # matching EQ toward a target curve, deterministic, linear phase (5.14)
-    chain.py           # Pedalboard chains: build from preset, run, save plugin state
-    presets.py         # load/save chain presets (TOML)
-    pipeline.py        ✓ validate -> Matchering -> limit -> export -> analyze -> index
-                       # still to add: pre/post chains (Phase 3), curve match (Phase 6)
+    chain.py           ✓ built-in modules, VST3/AU hosting, plugin scan, state capture
+    presets.py         ✓ load/save chain presets (TOML); packaged starters in presets/
+    pipeline.py        ✓ validate -> pre-chain -> Matchering -> post-chain -> limit ->
+                       #   export -> analyze -> index. Still to add: curve match (Phase 6)
   preview/
     streaming.py       ✓ codec round trips, post-encode peaks, platform gains (5.11)
     speakers.py        # phone/earbuds/car/laptop/club/mono simulation (5.12)
@@ -267,8 +275,8 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - Implement as a custom `gr.HTML` component with a Web Audio JS player (shared clock, per-source gain nodes).
 
 ### 5.6 Custom chains (Pedalboard)
-- Built-in modules: high-pass, shelves, peak EQ, compressor, gain, saturation, limiter.
-- **Third-party plugins:** scan the standard AU/VST3 folders, load them with `load_plugin`, expose parameters as UI controls, and save plugin state in presets.
+- Built-in modules: high-pass, shelves, peak EQ, compressor, gain, saturation, limiter. *[P3]* Saturation is our own level-compensated tanh with a dry/wet mix; the limiter module is the true-peak limiter from 5.2.
+- **Third-party plugins:** scan the standard AU/VST3 folders, load them with `load_plugin`, expose parameters as UI controls, and save plugin state in presets. *[P3]* Done for VST3 on Linux: parameters are listed with ranges and units (`masterbench plugins --params`), captured into the preset with `raw_state`, and restored on load. Mono-only plugins run once per channel. A plugin that returns NaN stops the chain with an error. Controls in the UI are TOML text, not sliders.
 - **Risk:** `show_editor()` needs the main thread. Ship parameter sliders first; a native editor is a stretch goal (side process).
 - Presets are TOML files, used as the pre-chain or post-chain.
 
@@ -478,9 +486,11 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Met:** loudness within ±0.1 LU (tested); in headless Chromium the playhead moved 9 ms across a switch and matched sources sat at one loudness (`scripts/check_player.js`, 10 checks); codec previews report post-encode true peak and are sample-aligned (tested); the Progress tab charted three tracks.
 - **Not done, by choice or limit:** nobody has listened to the player (headless browser only); loop points are set at the playhead with buttons, with no waveform or drag yet; section-jump buttons wait for Phase 6; platform normalization is numbers, not audio.
 
-**Phase 3: Chains and plugins**
+**Phase 3: Chains and plugins — DONE for free VST3s (2026-11-24); Robin's plugins unchecked**
 - Built-in modules, plugin scan and loading, presets, and pre/post-chain integration (the limiter-double-up rule).
 - *Done when:* a preset using one of Robin's plugins round-trips with the same output within tolerance.
+- **Met with a stand-in:** a preset hosting ZamCompX2 (a free VST3) saved to TOML, reloaded and produced output within 1e-6 of the original (tested; the test skips where that plugin is not installed).
+- **Still open:** the same round trip with one of Robin's own plugins, Audio Units, and Waves inside its WaveShell (`--plugin-name`). Plugins that need their editor open to initialize, or that use licensing dongles, may not load headless.
 
 **Phase 4: Stems**
 - Separation plus cache, stem diagnostics, rebalance, and Logic stem import.
