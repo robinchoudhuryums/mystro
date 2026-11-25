@@ -293,6 +293,35 @@ def arranged_song(
     return _normalize_peak(audio, peak_dbfs), sections
 
 
+def vocal_over_song(
+    sr: int = SR, vocal_db: float = -4.0, wander_db: float = 3.0, seed: int = 1
+) -> tuple[np.ndarray, np.ndarray, list[SectionTruth]]:
+    """A dry mono vocal and the arranged song as its instrumental, the way a rough comes in.
+
+    The vocal is sung at one level throughout (vocal_db against the hooks' beat) while the
+    beat is 6 dB quieter in the verses, so the vocal sits too loud in the verses. Its level
+    also wanders by wander_db over about ten seconds. Nothing is sung in the intro or outro.
+    Returns the vocal, the instrumental and the sections.
+    """
+    beat, sections = arranged_song(sr=sr, seed=seed)
+    take, _ = synthetic_vocal(sr=sr)
+    line = np.zeros(len(beat))
+    for section in sections:
+        if section.label not in ("verse", "hook"):
+            continue
+        start, end = int(section.start_s * sr), int(section.end_s * sr)
+        for at in range(start, end, len(take)):
+            chunk = take[: end - at]
+            line[at : at + len(chunk)] = chunk
+    rms = lambda x: float(np.sqrt(np.mean(x**2)))  # noqa: E731
+    hook = next(s for s in sections if s.label == "hook")
+    a, b = int(hook.start_s * sr), int(hook.end_s * sr)
+    line *= rms(beat[a:b]) * db_to_lin(vocal_db) / rms(line[a:b])
+    t = np.arange(len(line)) / sr
+    line *= 10.0 ** (wander_db * np.sin(2 * np.pi * t / 10.0) / 20.0)
+    return line, beat, sections
+
+
 def reference_master(sr: int = SR) -> np.ndarray:
     """A louder, brighter, bass-heavier take on the loop, standing in for a commercial master."""
     audio, _ = drum_808_loop(sr=sr, seed=7, hat_gain=0.25, bass_gain=1.1, detune=False)

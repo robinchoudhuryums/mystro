@@ -14,6 +14,7 @@ from masterbench.master.pipeline import RunResult
 from masterbench.progress import Habit
 from masterbench.release.versions import Versions
 from masterbench.stems.workflow import Diagnosis
+from masterbench.vocal.mix_assistant import VocalMix
 from masterbench.vocal.pitch_report import PitchReport
 from masterbench.vocal.workflow import BenchmarkRow, Tuned
 
@@ -569,4 +570,74 @@ def benchmark_text(rows: list[BenchmarkRow]) -> str:
         "it, Hard-tune should not). Tone: change in the long-term spectrum, smaller is closer.",
         "None of this says which sounds better. Compare them blind in the Vocal tab.",
     ]
+    return "\n".join(lines)
+
+
+def _lu(value: float | None) -> str:
+    return "  n/a" if value is None else f"{round(value, 1) + 0.0:+5.1f}"
+
+
+def vocal_mix_text(result: VocalMix) -> str:
+    """What the vocal mix assistant did: the vocal against the beat by section, and the rest."""
+    low, high = result.ride_range_db
+    lines = [
+        f"Vocal against the instrumental: target {result.target_db:+.1f} LU "
+        f"({result.target_source}); the mix came out at {_lu(result.final_ratio_db).strip()} LU.",
+    ]
+    if result.reference_ratio_db is not None:
+        lines.append(f"In the reference (separated stems): {result.reference_ratio_db:+.1f} LU.")
+    lines.append(
+        f"Fader {result.fader_db:+.1f} dB, then the rider moved between {low:+.1f} and "
+        f"{high:+.1f} dB around it."
+    )
+    lines.append("")
+    rows = [("Section", "From", "To", "Before", "After", "Gain", "")]
+    for section in result.sections:
+        rows.append(
+            (
+                section.label,
+                clock(section.start_s),
+                clock(section.end_s),
+                _lu(section.before_db),
+                _lu(section.after_db),
+                _lu(section.gain_db),
+                "at the limit" if section.limited else "",
+            )
+        )
+    widths = [max(len(row[i]) for row in rows) for i in range(7)]
+    lines += [
+        "  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)).rstrip() for row in rows
+    ]
+    lines.append("")
+    deess = result.deess
+    if deess["events"]:
+        lines.append(
+            f"De-esser: {deess['events']:.0f} moments, {deess['mean_reduction_db']:.1f} dB on "
+            f"average, {deess['max_reduction_db']:.1f} dB at most."
+        )
+    else:
+        lines.append("De-esser: nothing to do.")
+    for cut in result.corrective_cuts:
+        lines.append(
+            f"Cut at the vocal's resonance: {cut['gain_db']:+.1f} dB at {cut['freq_hz']:.0f} Hz."
+        )
+    lines.append(
+        f"Room in the beat: 1 to 4 kHz dipped {result.carve['mean_dip_db']:.1f} dB on average "
+        "while the vocal is there."
+    )
+    if result.delay_ms is not None:
+        lines.append(
+            f"Delay: {result.delay_ms:.0f} ms, from a tempo of {result.tempo_bpm:.1f} BPM."
+        )
+    if result.trim_db < 0:
+        lines.append(f"The mix was turned down {-result.trim_db:.1f} dB to leave headroom.")
+    lines.append("")
+    lines.append(headline(result.run))
+    lines.append(f"Run {result.run.manifest.id}. Files in {result.folder}:")
+    lines += [f"  {name}: {file}" for name, file in result.files.items()]
+    if result.mastered:
+        lines.append(f"  master: {result.run.output('master_24')}")
+    lines += [flag_line(flag) for flag in result.flags]
+    if result.notes_error:
+        lines.append(f"AI notes were not made: {result.notes_error}")
     return "\n".join(lines)

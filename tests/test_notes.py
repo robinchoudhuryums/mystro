@@ -174,5 +174,19 @@ def test_key_is_found_without_being_shown(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_prompt_is_versioned() -> None:
     prompt, version = mix_notes.system_prompt()
-    assert version == 2 and "Logic Pro" in prompt
+    assert version == 3 and "Logic Pro" in prompt and "`vocal_mix`" in prompt
     assert mix_notes.payload_hash({}, "m", 1) != mix_notes.payload_hash({}, "m", 2)
+
+
+def test_no_key_anywhere_is_explained(
+    paths: Paths, settings: Settings, fx: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SDK accepts a client without credentials and fails only when it sends."""
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(paths.root))
+    monkeypatch.setattr(mix_notes, "_keychain_key", lambda: None)
+    run = pipeline.analyze(fx["loop"], paths, settings)
+    with pytest.raises(NotesError, match="No Anthropic API key was found. Set ANTHROPIC_API_KEY"):
+        mix_notes.generate(run, paths, settings)
+    assert mix_notes.spent_this_month(paths) == 0.0

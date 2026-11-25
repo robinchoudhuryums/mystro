@@ -1,0 +1,32 @@
+description = "Pinned and bright, with grit and a quarter-note delay; for energy over polish."
+highpass_hz = 120
+corrective_eq = true
+deess_threshold_db = -14
+deess_max_db = 10
+reverb_db = -24
+reverb_size = 0.3
+delay_db = -18
+delay_note = "1/4"
+delay_feedback = 0.35
+
+[compressor]
+threshold_db = -30
+ratio = 8
+attack_ms = 2
+release_ms = 60
+makeup_db = 6
+
+[[tone]]
+type = "peak"
+freq_hz = 3000
+gain_db = 2
+q = 1.0
+
+[[tone]]
+type = "high_shelf"
+freq_hz = 10000
+gain_db = 3
+
+[saturation]
+drive_db = 6
+mix = 0.5

@@ -1,0 +1,19 @@
+description = "Light control and a little air; for sung vocals that should sound untouched."
+highpass_hz = 80
+corrective_eq = true
+deess_threshold_db = -10
+deess_max_db = 6
+reverb_db = -20
+reverb_size = 0.45
+
+[compressor]
+threshold_db = -22
+ratio = 2.5
+attack_ms = 15
+release_ms = 150
+makeup_db = 2
+
+[[tone]]
+type = "high_shelf"
+freq_hz = 10000
+gain_db = 1.5

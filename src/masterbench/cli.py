@@ -34,6 +34,7 @@ from masterbench.release import versions as alternate_versions
 from masterbench.stems import separate as stem_separation
 from masterbench.stems import workflow as stem_workflow
 from masterbench.vocal import engines as vocal_engines
+from masterbench.vocal import mix_assistant
 from masterbench.vocal import presets as tuning_presets
 from masterbench.vocal import scales as vocal_scales
 from masterbench.vocal import tuning as vocal_tuning
@@ -66,6 +67,7 @@ ENGINE_ERRORS = (
     vocal_tuning.TuningError,
     vocal_scales.ScaleError,
     vocal_engines.EngineError,
+    mix_assistant.MixError,
     LookupError,
 )
 
@@ -1034,6 +1036,101 @@ def vocal_benchmark(
     typer.echo("")
     listed = [c["label"] for c in vocal_workflow.candidates(found)]
     typer.echo(f"Ready to compare in the Vocal tab [{found.id}]: {', '.join(listed)}")
+
+
+@vocal_app.command("mix")
+def vocal_mix(
+    vocal: Annotated[
+        Path | None,
+        typer.Argument(exists=True, dir_okay=False, help="The dry lead vocal, tuned or not."),
+    ] = None,
+    instrumental: Annotated[
+        Path | None,
+        typer.Argument(exists=True, dir_okay=False, help="The beat, bounced from the same start."),
+    ] = None,
+    from_stems: Annotated[
+        str | None, typer.Option(help="Use a track's stems instead of two files.")
+    ] = None,
+    adlib: Annotated[
+        list[Path] | None, typer.Option(exists=True, dir_okay=False, help="Ad-lib or backing stem.")
+    ] = None,
+    title: Annotated[str | None, typer.Option(help="Track title.")] = None,
+    genre: Annotated[str | None, typer.Option(help="Genre of the track.")] = None,
+    preset: Annotated[
+        str, typer.Option("--chain", help="Vocal chain: gentle, modern-rap, aggressive or yours.")
+    ] = mix_assistant.DEFAULT_CHAIN,
+    target: Annotated[
+        float | None,
+        typer.Option(help="Vocal loudness against the beat, in LU. Default: by genre."),
+    ] = None,
+    target_from_reference: Annotated[
+        bool, typer.Option(help="Take the target from the reference's stems (separates it once).")
+    ] = False,
+    ride: Annotated[
+        float, typer.Option(min=0, max=12, help="How far the rider may move, dB.")
+    ] = 6.0,
+    carve: Annotated[
+        float, typer.Option(min=0, max=6, help="Dip in the beat's 1-4 kHz, dB.")
+    ] = 3.0,
+    duck: Annotated[float, typer.Option(min=0, max=6, help="Duck the beat in hooks, dB.")] = 0.0,
+    adlib_preset: Annotated[str, typer.Option(help="tucked, wide, left or right.")] = "tucked",
+    ref: Annotated[str | None, typer.Option(help="Reference to master against.")] = None,
+    curve: Annotated[bool, typer.Option("--curve", help="Master toward the genre curve.")] = False,
+    lufs: Annotated[float | None, typer.Option(help="Loudness target for the master.")] = None,
+    notes: Annotated[
+        bool, typer.Option("--notes", help="Ask for AI mix notes too (numbers only are sent).")
+    ] = False,
+    intent: Annotated[str, typer.Option(help="What you are going for, for the notes.")] = "",
+) -> None:
+    """Mix a dry vocal into an instrumental and master it: rough to release candidate."""
+    paths, app_settings = config.get_paths(), config.load_settings()
+    if (vocal is None or instrumental is None) and not from_stems:
+        raise typer.BadParameter("give a vocal and an instrumental, or --from-stems TRACK")
+    try:
+        options = mix_assistant.MixOptions(
+            chain=preset,
+            title=title,
+            genre=genre,
+            target_db=target,
+            target_from_reference=target_from_reference,
+            max_ride_db=ride,
+            carve_db=carve,
+            duck_db=duck,
+            adlib_preset=adlib_preset,
+            reference=ref,
+            by_curve=curve,
+            target_lufs=lufs,
+        )
+        if from_stems:
+            result = mix_assistant.from_stems(
+                paths,
+                app_settings,
+                from_stems,
+                options,
+                progress=_progress,
+                notes=notes,
+                intent=intent,
+            )
+        else:
+            assert vocal is not None and instrumental is not None
+            result = mix_assistant.mix(
+                paths, app_settings, vocal, instrumental, options, adlib, _progress, notes, intent
+            )
+    except ENGINE_ERRORS as exc:
+        raise _fail(exc) from exc
+    typer.echo(summary.vocal_mix_text(result))
+    if result.notes is not None:
+        typer.echo("")
+        typer.echo(mix_notes.render(result.notes))
+
+
+@vocal_app.command("chains")
+def vocal_chains() -> None:
+    """List the vocal chain presets."""
+    paths = config.get_paths()
+    for name in mix_assistant.chain_names(paths):
+        found = mix_assistant.get_chain(paths, name)
+        typer.echo(f"{name:<12} {found.description}")
 
 
 @vocal_app.command("presets")

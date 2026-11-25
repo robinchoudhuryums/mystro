@@ -237,6 +237,23 @@ Compare the two tuning engines, and the same vocal tuned elsewhere, in a blind t
 uv run masterbench vocal benchmark ~/Music/Bounces/song-lead-vox.wav --add "Waves=~/Music/Bounces/song-waves.wav"
 ```
 
+Mix a dry vocal into its instrumental and master the result in one go. Both files must be
+bounced from the same point in the project. The vocal goes through a chain (`gentle`,
+`modern-rap` or `aggressive`; `masterbench vocal chains` lists them), is ridden so it holds
+its level against the beat, and gets reverb and a tempo-synced delay; the beat is dipped
+slightly where the vocal lives. The processed vocal and instrumental are written beside
+the mix, to take back into Logic.
+
+```bash
+uv run masterbench vocal mix ~/Music/Bounces/song-lead-vox.wav ~/Music/Bounces/song-beat.wav --title "Song" --genre hip-hop
+```
+
+`--target -1` sets how loud the vocal sits against the beat (in LU), `--ride` how far the
+rider may move, `--carve` and `--duck` how much room is made in the beat, `--adlib FILE`
+adds ad-libs, and `--notes` asks for AI mix notes on the result. Your own vocal chains are
+TOML files in `~/MasterBench/presets/vocal/`; `insert = "name"` in one runs a chain preset
+of yours (a Soundtoys plugin, say) after the built-in steps.
+
 See what the codecs and Spotify's normalization do to a master:
 
 ```bash
@@ -283,7 +300,7 @@ uv run python scripts/verify_stack.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright
 ```
 
-The full suite takes about fourteen minutes. `pytest -m "not slow"` skips the test that drives the
+The full suite takes about fifteen minutes. `pytest -m "not slow"` skips the test that drives the
 third-party libraries.
 `verify_stack.py` exercises every library on generated audio and downloads one separation
 model (about 65 MB) the first time.
@@ -313,7 +330,8 @@ src/masterbench/
   release/          instrumental and a cappella versions with locked processing
   monitoring.py     calibration noise, listening sessions, break reminders
   mcp_server.py     MCP tools over the engine
-  vocal/            pitch tracking, pitch report, tuning (WORLD or Rubber Band), presets
+  vocal/            pitch tracking, pitch report, tuning (WORLD or Rubber Band), presets,
+                    and the vocal mix assistant (chain, de-esser, rider, sends)
   ui/               Gradio app, charts, Web Audio A/B/C player
   fixtures.py       synthetic test audio with known ground truth
   migrations/       numbered SQL files, applied in order

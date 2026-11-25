@@ -5,13 +5,16 @@
 //   MASTERBENCH_HOME=/tmp/mb uv run masterbench ui --no-browser &
 //   node scripts/check_vocal.js http://127.0.0.1:7860 /tmp/fx/vocal.wav
 //
+// Give a dry vocal and its instrumental as well to check the Vocal Mix sub-tab; add a
+// reference for the genre first (masterbench ref add) to see it through to a master.
+//
 // Requires Node with Playwright (npm i -g playwright) and its Chromium.
 
 const { chromium } = require("playwright");
 
-const [base, vocal] = process.argv.slice(2);
+const [base, vocal, songVocal, songBeat] = process.argv.slice(2);
 if (!base || !vocal) {
-  console.error("usage: node scripts/check_vocal.js <base-url> <vocal.wav>");
+  console.error("usage: node scripts/check_vocal.js <base-url> <vocal.wav> [<song-vocal.wav> <instrumental.wav>]");
   process.exit(2);
 }
 
@@ -96,6 +99,28 @@ const check = (ok, message) => {
   await vocalPlayer.locator(".mb-save").click();
   await vocalPlayer.getByText("Blind test saved.").waitFor({ timeout: 20000 });
   check(count >= 6, `a blind test over all ${count} versions is saved with the track`);
+
+  // The Vocal Mix sub-tab, when a vocal and its instrumental are given.
+  if (songVocal && songBeat) {
+    await tab.getByRole("tab", { name: "Vocal Mix" }).click();
+    await page.locator('#mb-mix-vocal input[type="file"]').setInputFiles(songVocal);
+    await page.locator('#mb-mix-beat input[type="file"]').setInputFiles(songBeat);
+    await page.locator("#mb-mix-vocal").getByText("Night Drive vox.wav").waitFor({ timeout: 30000 });
+    await page.locator("#mb-mix-beat").getByText("Night Drive.wav").waitFor({ timeout: 30000 });
+    await tab.getByLabel("Track title").fill("Night Drive");
+    await tab.getByRole("button", { name: "Mix and master" }).click();
+    await tab.getByText("Vocal against the instrumental: target").waitFor({ timeout: 300000 });
+    check(true, "one click mixes the vocal into the instrumental");
+    // With a reference for the genre in the library the result is mastered; without one
+    // the mix is analyzed and the page says why it went no further.
+    const mastered = (await tab.getByText("Master: -14.0 LUFS").count()) > 0;
+    const explained = (await tab.getByText("analyzed but not mastered").count()) > 0;
+    check(mastered || explained, mastered ? "the result is mastered to -14 LUFS" : "no reference: analyzed, and it says so");
+    await page.waitForFunction(() => (window.masterbenchPlayers["mb-mix-player"]?.sources.length || 0) >= 3, null, { timeout: 60000 });
+    const mixed = await page.evaluate(() => window.masterbenchPlayers["mb-mix-player"].sources.map((s) => s.label));
+    check(mixed.includes("Lead vocal, processed") && mixed.includes("Instrumental") && mixed.includes("Master") === mastered, `the result and its parts are in the player (${mixed.join(" | ")})`);
+    check((await tab.getByText("lead_vocal.wav").count()) > 0, "the processed vocal can be downloaded");
+  }
   check(errors.length === 0, `no page errors (${errors.join("; ") || "none"})`);
   await page.screenshot({ path: process.env.SHOT || "/dev/null", fullPage: true }).catch(() => {});
   await browser.close();

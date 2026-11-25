@@ -3,7 +3,7 @@
 > A personal, local-first mastering, mix-analysis and learning workbench for Robin's own tracks.
 > New session: read this file and `NOTES.md`, then continue with the next unfinished phase.
 
-**Status:** Phases 0 to 8 done (2026-11-24); see each phase for what still needs the Mac, an API key or real music. Phase 8's blind test on a real vocal is Robin's to do. Next: Phase 9.
+**Status:** All ten phases (0 to 9) are built and tested on generated fixtures (2026-11-25). Nothing has been run on Robin's Mac, on real music, with his plugins or against the live Anthropic API; `NOTES.md` lists what to check there, and each phase below says what is unverified.
 
 **Changes made to this plan after the Phase 0 spike** (details in `NOTES.md`; each is also
 edited in place below and marked *[P0]*):
@@ -129,6 +129,31 @@ edited in place below and marked *[P0]*):
 - Tuning a vocal that was separated from a mix also writes the mix with that vocal swapped
   for the tuned one, labelled preview quality.
 
+**Decisions made in Phase 9** (marked *[P9]* below):
+- The de-esser, the rider and the dip in the beat are our own DSP (`vocal/dynamics.py`),
+  each a gain over time applied without delay. Compression, EQ, saturation, reverb and
+  delay are Pedalboard's.
+- The de-esser's threshold is relative: how far under the vocal's own body level
+  (200 Hz to 4 kHz) the 5 to 10 kHz band may sit. Only that band is turned down.
+- The vocal is brought to -20 LUFS before the chain, so compressor thresholds in a preset
+  mean the same thing whatever level the file was bounced at.
+- The rider is three layers: a fader (one gain that puts the vocal on target over the
+  song), a slow rider (3 s windows, capped), and a trim per section. The cap applies to
+  the rider and trim, around the fader.
+- "Vocal-to-instrumental" is integrated loudness of the vocal minus that of the
+  instrumental, in LU. Targets without a reference are per-genre defaults made up for this
+  project (hip-hop -2, house and electronic -6, otherwise -3).
+- Sections and tempo come from a rough sum of the processed vocal and the beat, so the
+  rider and the tempo-synced delay do not depend on an earlier analysis.
+- Robin has the Soundtoys bundle, which has no de-esser or conventional compressor, so
+  the chain's own are used. His plugins go in as a chain preset named by `insert` in a
+  vocal chain file, run after saturation. Untested with real plugins.
+- The mix is written to `projects/<track>/vocal_mix/<id>/` with the processed vocal and
+  instrumental beside it, then mastered as an ordinary run whose `run.json` carries every
+  setting and result under `made_from`. With no reference or curve for the genre the mix is
+  analyzed, not mastered, and says so.
+- AI notes for such a run get the vocal mix's numbers too (prompt version 3).
+
 ---
 
 ## 1. Context
@@ -199,7 +224,7 @@ pyproject.toml           ✓
 uv.lock                  ✓
 scripts/verify_stack.py  ✓ Phase 0 verification spike
 scripts/check_player.js  ✓ [P2] browser check of the player (needs a running UI)
-scripts/check_vocal.js   ✓ [P8] browser check of the Vocal tab and pitch editor
+scripts/check_vocal.js   ✓ [P8] browser check of the Vocal tab, pitch editor and Vocal Mix
 src/masterbench/
   migrations/            ✓ 001_init.sql, 002_..., applied in order (packaged)
   config.py            ✓ paths, defaults, targets; loads ~/MasterBench/settings.toml
@@ -253,7 +278,9 @@ src/masterbench/
     presets.py         ✓ [P8] tuning presets as TOML
     presets/           ✓ natural.toml, tight.toml, hard-tune.toml
     workflow.py        ✓ [P8] storage, full-mix path, outside versions, engine benchmark
-    mix_assistant.py   # vocal chain, de-esser, rider, dynamic EQ carve, sum (5.24)
+    dynamics.py        ✓ [P9] de-esser, vocal rider, dip and duck in the beat
+    mix_assistant.py   ✓ vocal chain, sends, ad-libs, sum, master, feedback (5.24)
+    chains/            ✓ [P9] gentle.toml, modern-rap.toml, aggressive.toml
   release/
     versions.py        ✓ instrumental / a cappella with locked processing (5.20)
   progress.py          ✓ per-track points, recurring flags, blind-test history, habits
@@ -271,7 +298,7 @@ src/masterbench/
     trends_prompt.md   ✓ versioned prompt for the progress summary
   ui/
     app.py             ✓ Gradio Blocks app: every tab in section 6 (Vocal Mix comes in Phase 9)
-    vocal_tab.py       ✓ [P8] the Vocal tab
+    vocal_tab.py       ✓ [P8] the Vocal tab: Tune and, from Phase 9, Vocal Mix
     player.py          ✓ [P2] player component, sources per run, blind-test saving
     charts.py          ✓ [P2] Plotly figures
     ab_player.js       ✓ synced, gain-matched A/B/C player (Web Audio)
@@ -313,6 +340,8 @@ The root is `$MASTERBENCH_HOME` when set, else the folder saved by `masterbench 
     versions/<run-id>/instrumental_24.wav, acapella_24.wav
     vocal/<vocal-hash>/vocal.json, pitch.json, edits.json, tuned_<settings-hash>.wav + .json,
                       # preview_<settings-hash>.wav (full-mix path), external/, benchmark.json
+    vocal_mix/<id>/vocal-mix-<id>.wav, lead_vocal.wav, instrumental.wav, adlibs.wav,
+                      # vocal_mix.json
 ```
 Make every run reproducible from `run.json`. Never overwrite the input file.
 
@@ -554,6 +583,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Output:** a mixed stereo file, then the standard mastering pipeline (5.2). Save every setting in `run.json`. Export the processed vocal and instrumental separately too, so Robin can pull them back into Logic.
 - **Feedback loop:** run the analysis, detectors and AI notes on the result, and show the vocal-to-instrumental ratio against the reference by section.
 - Positioning: a fast "rough to release-candidate" path for vocal-plus-beat tracks. Logic stays the place for creative mixing decisions.
+- *[P9]* What differs from the list above: the chain's order is high-pass, corrective cuts, de-esser, compression, tone, saturation, own chain, then the rider, then the sends (so the sends follow the ridden vocal). Reverb and delay tails are cut at the end of the file. Ad-lib width is a short delay on one side, which combs in mono. The reference's vocal-to-instrumental figure is shown only as one number for the whole reference, and only once its stems have been separated; a section-by-section comparison with the reference is not built.
 
 ## 6. UI tabs (Gradio Blocks)
 1. **Master:** select a mix (or pick from the watch-folder inbox); the suggested reference or genre curve; pre/post presets; target; run; results, flags and the player.
@@ -635,12 +665,15 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 - **Not met: the blind A/B on a real vocal.** There is no real vocal, Waves result or Flex Pitch result here. What exists is the tooling: `masterbench vocal benchmark` renders Natural and Hard-tune with both engines, `--add "Waves=file.wav"` brings in outside versions, and the Vocal tab's player runs and logs the blind test (exercised in a headless browser on the synthetic vocal). The engine defaults are provisional until Robin has done this.
 - **What the fixtures cannot show:** a synthetic sawtooth has no consonants, breath, creak, reverb or doubled takes. Pitch tracking, note segmentation and both engines' sound on a human voice are untested. The full-mix path was tested with a perfect stand-in for the separator; real separation will leave bleed that the tuner then makes more audible.
 
-**Phase 9: Vocal mix assistant**
+**Phase 9: Vocal mix assistant — DONE on fixtures (2026-11-25); unheard, and AI notes only against a stand-in**
 - The vocal chain and presets, the de-esser, the vocal rider, the dynamic EQ carve, ad-lib handling, sum → master, separate exports, and the feedback loop (5.24).
 - *Done when:*
   - on fixture stems, the rider holds the vocal-to-instrumental ratio within ±1 dB of target in each section
   - the de-esser reduces planted sibilance spikes by a measurable amount
   - an end-to-end dry vocal + instrumental → mastered file runs in one click and produces a full analysis with AI notes
+- **Met (tested):** on a fixture where the vocal sits 5.7 LU over the beat in the verses and 0.5 in the hooks, every sung section of the written files is within 1 dB of the -2 LU target (measured against the fixture's own section times, not the detected ones; in practice within 0.3). Planted "s" bursts lose 7.2 dB of their 5 to 10 kHz when as loud as the voice and 4.2 dB when 6 dB quieter, the rest of the file is bit-identical, and the sibilance detector goes from three findings to none.
+- **One click, as far as it can be shown here:** `masterbench vocal mix vocal.wav beat.wav` and the Vocal Mix sub-tab's single button both produce a mastered file at -14 LUFS and -1 dBTP with the full analysis, in 22 s for a 69 s song. With notes requested, the request is built by the real SDK and answered by the test stand-in, and includes the vocal mix's numbers. **No live API call has been made**, in this phase or any other.
+- **What that does not show:** nobody has listened to any of it. The chain presets and genre targets are invented starting points. The corrective EQ acts on whatever the resonance detector reports, and on the synthetic vocal that was one of its formants; on a real voice it may cut something that belongs there (set `corrective_eq = false` in a chain of your own to turn it off). The rider works from levels, so it will lift a quiet breath or a deliberately soft line toward the target like anything else.
 
 ## 8. Testing and quality
 - Use **only generated fixtures** in the repo; never commit Robin's music. `.gitignore` blocks audio extensions everywhere, and fixtures are generated per test session.
@@ -681,8 +714,8 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
   5. ~~Natural vs hard-tune?~~ **Decided: both, with Natural as the default** (5.23).
   6. Tuner: **Waves Tune LT**. It is a graphical tuner that needs its editor, so it cannot be
      hosted headless; the Phase 8 comparison uses a Waves-tuned vocal exported from Logic.
-     Still unanswered: a de-esser or vocal compressor plugin for the vocal chain (ask at
-     Phase 9).
+     Answered at Phase 9: he has the Soundtoys bundle (saturation, EQ, delay, reverb; no
+     de-esser or conventional compressor), so the vocal chain uses its own for those.
 
 ## 10. Working agreement
 1. Proceed phase by phase, committing at each phase's acceptance criteria and summarizing what changed.

@@ -139,6 +139,10 @@ class Paths:
         return self.root / "presets" / "tuning"
 
     @property
+    def vocal_chains(self) -> Path:
+        return self.root / "presets" / "vocal"
+
+    @property
     def projects(self) -> Path:
         return self.root / "projects"
 

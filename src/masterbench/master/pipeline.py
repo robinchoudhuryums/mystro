@@ -36,6 +36,7 @@ class MasterOptions:
     post_chain: str | None = None
     mode: str = "matchering"
     curve: str | None = None
+    made_from: dict | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings, reference: str, **overrides) -> MasterOptions:
@@ -275,6 +276,9 @@ def master(
         used["curve"] = _curve_settings(curve)
     if eq is not None:
         used["match_eq"] = asdict(eq)
+    if options.made_from is not None:
+        # How the mix itself was made, when another tool built it (the vocal mix assistant).
+        used["made_from"] = options.made_from
     manifest = RunManifest(
         id=projects.new_run_id(),
         track=project.track,

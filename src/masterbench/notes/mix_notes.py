@@ -234,6 +234,9 @@ def build_payload(run: RunResult, intent: str = "") -> dict[str, Any]:
     stems = _stems(run)
     if stems:
         payload["stems"] = stems
+    made = run.manifest.settings.get("made_from")
+    if made and made.get("kind") == "vocal_mix":
+        payload["vocal_mix"] = {"chain": made["chain"]["name"], **made["result"]}
     curve = run.manifest.settings.get("curve")
     if curve:
         payload["genre_curve"] = {"genre": curve["genre"], "references": len(curve["references"])}
@@ -371,6 +374,14 @@ def ask(
         raise NotesError(f"Could not reach the Anthropic API: {exc}") from exc
     except anthropic.AnthropicError as exc:
         raise NotesError(f"No usable Anthropic credentials: {exc}") from exc
+    except TypeError as exc:
+        # With no key anywhere the SDK builds a client and only objects when asked to send.
+        if "authentication" not in str(exc):
+            raise
+        raise NotesError(
+            "No Anthropic API key was found. Set ANTHROPIC_API_KEY, or store one with: "
+            f"security add-generic-password -s {KEYCHAIN_SERVICE} -a anthropic -w"
+        ) from exc
 
 
 def parse_reply(response: Any) -> dict[str, Any]:

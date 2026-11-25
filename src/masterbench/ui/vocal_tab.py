@@ -10,13 +10,18 @@ from typing import Any
 import gradio as gr
 
 from masterbench import audio_io, summary
+from masterbench.analysis import loudness
 from masterbench.analysis.musical import NOTE_NAMES
 from masterbench.config import Paths, Settings
 from masterbench.master import pipeline
+from masterbench.master.matchering_engine import MasteringError
+from masterbench.notes import mix_notes
+from masterbench.references.library import ReferenceError as LibraryError
 from masterbench.stems import separate
 from masterbench.stems.separate import StemError
 from masterbench.ui import player
-from masterbench.vocal import engines, presets, scales, tuning, workflow
+from masterbench.vocal import engines, mix_assistant, presets, scales, tuning, workflow
+from masterbench.vocal.mix_assistant import MixError, MixOptions, VocalMix
 from masterbench.vocal.pitch_report import PitchReport
 from masterbench.vocal.tuning import NoteEdit, TuningError
 from masterbench.vocal.workflow import VocalError, VocalSource
@@ -28,6 +33,9 @@ ERRORS = (
     scales.ScaleError,
     engines.EngineError,
     StemError,
+    MixError,
+    MasteringError,
+    LibraryError,
     audio_io.AudioError,
     LookupError,
 )
@@ -63,6 +71,16 @@ EDITOR_CSS = """
 .mb-pitch .mb-note-label { fill: #fff; pointer-events: none; }
 .mb-pitch-status, .mb-pitch-empty { margin-top: 8px; color: var(--body-text-color-subdued); }
 """
+TUNE_PLAYER_HINT = "Check or tune a vocal to hear it here."
+MIX_PLAYER_HINT = "Mix a vocal into an instrumental to hear the result here."
+AUDIO_TYPES = [".wav", ".aif", ".aiff", ".flac"]
+MIX_INTRO = (
+    "Give it a **dry vocal** and the **instrumental**, both bounced from the same point in "
+    "Logic. It runs the vocal through a chain, rides it against the beat, makes a little "
+    "room for it in the beat, adds reverb and a tempo-synced delay, and masters the result. "
+    "The processed vocal and instrumental are written separately too, to take back into "
+    "Logic. It gets a rough to a release candidate; the creative decisions stay yours."
+)
 INTRO = (
     "Tune a **dry vocal** exported from Logic. Check the pitch first: it changes nothing and "
     "shows which notes are out. Logic's Flex Pitch is still the tool for detailed note-by-note "
@@ -118,10 +136,12 @@ def editor_value(source: VocalSource | None, found: PitchReport | None) -> str:
     )
 
 
-def player_config(source: VocalSource | None, selected: str | None = None) -> str:
+def player_config(
+    source: VocalSource | None, selected: str | None = None, message: str = TUNE_PLAYER_HINT
+) -> str:
     """The vocal, its tuned versions and anything added for comparison, for the A/B player."""
     if source is None:
-        return json.dumps({"sources": [], "message": "Check or tune a vocal to hear it here."})
+        return json.dumps({"sources": [], "message": message})
     listed = workflow.candidates(source) + workflow.mix_candidates(source)
     found = workflow.stored_report(source)
     events = [
@@ -153,6 +173,31 @@ def player_config(source: VocalSource | None, selected: str | None = None) -> st
     )
 
 
+def tuned_choices(paths: Paths) -> list[tuple[str, str]]:
+    """Tuned vocals made so far, newest vocal first, as (label, file path)."""
+    return [
+        (f"{source.track.title}: {version.label}", str(source.folder / version.file))
+        for source in workflow.list_sources(paths)
+        for version in reversed(workflow.tuned_versions(source))
+    ]
+
+
+def mix_player_config(result: VocalMix) -> str:
+    """The run's mix, master and reference, plus the processed vocal and instrumental alone."""
+    loaded = json.loads(player.config(result.run))
+    for name, label in (("lead_vocal", "Lead vocal, processed"), ("instrumental", "Instrumental")):
+        audio, info = audio_io.load(result.path(name))
+        loaded["sources"].append(
+            {
+                "id": name,
+                "label": label,
+                "url": player.file_url(result.path(name)),
+                "lufs": round(loudness.integrated(audio, info.sample_rate), 2),
+            }
+        )
+    return json.dumps(loaded)
+
+
 def key_note(found: PitchReport) -> str:
     where = {
         "track": "from the track's analysis",
@@ -165,7 +210,7 @@ def key_note(found: PitchReport) -> str:
     return f"Key: **{found.key}** ({where}{confidence}). Change it on the left if it is wrong."
 
 
-def build(paths: Paths, settings: Settings) -> None:
+def build(paths: Paths, settings: Settings, genres: list[str], genre_default: str | None) -> None:
     """Add the Vocal tab to the Blocks being built."""
     names = presets.names(paths)
     start = presets.get(paths, presets.DEFAULT).settings("C major")
@@ -183,108 +228,185 @@ def build(paths: Paths, settings: Settings) -> None:
             return {"error": str(exc)}
 
     with gr.Tab("Vocal", elem_id="mb-vocal-tab"):
-        gr.Markdown(INTRO)
-        current = gr.State(None)
-        with gr.Row():
-            with gr.Column(scale=1):
-                voc_file = gr.File(
-                    label="Vocal (or a full mix, with the box below ticked)",
-                    file_types=[".wav", ".aif", ".aiff", ".flac"],
-                    type="filepath",
+        with gr.Tab("Tune"):
+            gr.Markdown(INTRO)
+            current = gr.State(None)
+            with gr.Row():
+                with gr.Column(scale=1):
+                    voc_file = gr.File(
+                        label="Vocal (or a full mix, with the box below ticked)",
+                        file_types=[".wav", ".aif", ".aiff", ".flac"],
+                        type="filepath",
+                    )
+                    voc_pick = gr.Dropdown(
+                        label="Or a vocal already here",
+                        choices=source_choices(paths),
+                        value=None,
+                    )
+                    voc_title = gr.Textbox(
+                        label="Track it belongs to (optional)",
+                        info="Uses that track's key and files the vocal with it.",
+                    )
+                    voc_mix = gr.Checkbox(
+                        label="This is a full mix: separate the vocal first (preview quality)"
+                    )
+                    voc_key = gr.Dropdown(label="Key", choices=KEYS, value=None)
+                    voc_preset = gr.Radio(label="Style", choices=names, value=presets.DEFAULT)
+                    voc_amount = gr.Slider(
+                        0, 100, value=round(start.amount * 100), step=1, label="Amount (%)"
+                    )
+                    with gr.Row():
+                        voc_check = gr.Button("Check pitch")
+                        voc_tune = gr.Button("Tune", variant="primary")
+                with gr.Column(scale=2):
+                    voc_key_md = gr.Markdown()
+                    voc_result = gr.Markdown()
+                    voc_player = player.component(paths, "mb-vocal-player", player_config(None))
+                    voc_files = gr.File(
+                        label="Tuned files", file_count="multiple", interactive=False
+                    )
+                    voc_report = gr.Markdown()
+            with gr.Accordion("Advanced", open=False):
+                with gr.Row():
+                    voc_scale = gr.Dropdown(
+                        label="Scale",
+                        choices=[("From the key", ""), *[(name, name) for name in scales.SCALES]],
+                        value="",
+                    )
+                    voc_notes = gr.Textbox(
+                        label="Or your own notes",
+                        placeholder="F G# A# C D#",
+                        info="Overrides the scale.",
+                    )
+                    voc_engine = gr.Radio(
+                        label="Engine", choices=list(tuning.ENGINES), value=start.engine
+                    )
+                with gr.Row():
+                    voc_retune = gr.Slider(
+                        0,
+                        400,
+                        value=start.retune_ms,
+                        step=5,
+                        label="Retune speed (ms; 0 is instant)",
+                    )
+                    voc_humanize = gr.Slider(
+                        0,
+                        100,
+                        value=round(start.humanize * 100),
+                        step=5,
+                        label="Humanize (%; 100 keeps vibrato and slides)",
+                    )
+                with gr.Row():
+                    voc_formants = gr.Checkbox(label="Keep the formants", value=True)
+                    voc_shift = gr.Slider(
+                        -12, 12, value=0, step=0.5, label="Formant shift (semitones; WORLD only)"
+                    )
+                    voc_hold = gr.Checkbox(label="Note hold: one step per slide", value=False)
+                gr.Markdown(
+                    "**Notes.** The thin line is where a note was sung, the bar where it will go. "
+                    "Click a note to leave it alone, drag it to send it elsewhere, click an "
+                    "edited note to undo."
                 )
-                voc_pick = gr.Dropdown(
-                    label="Or a vocal already here",
-                    choices=source_choices(paths),
-                    value=None,
+                script = (
+                    resources.files("masterbench.ui").joinpath("pitch_editor.js").read_text("utf-8")
                 )
-                voc_title = gr.Textbox(
-                    label="Track it belongs to (optional)",
-                    info="Uses that track's key and files the vocal with it.",
-                )
-                voc_mix = gr.Checkbox(
-                    label="This is a full mix: separate the vocal first (preview quality)"
-                )
-                voc_key = gr.Dropdown(label="Key", choices=KEYS, value=None)
-                voc_preset = gr.Radio(label="Style", choices=names, value=presets.DEFAULT)
-                voc_amount = gr.Slider(
-                    0, 100, value=round(start.amount * 100), step=1, label="Amount (%)"
+                voc_editor = gr.HTML(
+                    value=editor_value(None, None),
+                    html_template=EDITOR_TEMPLATE,
+                    css_template=EDITOR_CSS,
+                    js_on_load=script,
+                    server_functions=[save_edits],
+                    elem_id="mb-pitch-editor",
                 )
                 with gr.Row():
-                    voc_check = gr.Button("Check pitch")
-                    voc_tune = gr.Button("Tune", variant="primary")
-            with gr.Column(scale=2):
-                voc_key_md = gr.Markdown()
-                voc_result = gr.Markdown()
-                voc_player = player.component(paths, "mb-vocal-player", player_config(None))
-                voc_files = gr.File(label="Tuned files", file_count="multiple", interactive=False)
-                voc_report = gr.Markdown()
-        with gr.Accordion("Advanced", open=False):
+                    voc_preset_name = gr.Textbox(label="Save these settings as a preset", scale=2)
+                    voc_preset_save = gr.Button("Save preset", scale=1)
+                voc_preset_md = gr.Markdown()
+                gr.Markdown(
+                    "**Compare engines.** Tunes this vocal with both engines, Natural and "
+                    "Hard-tune, and loads them all in the player above. Add the same vocal "
+                    "tuned in Waves or "
+                    "Flex Pitch, then use the player's blind test to choose without knowing which "
+                    "is which."
+                )
+                with gr.Row():
+                    voc_ext = gr.File(
+                        label="The same vocal tuned elsewhere (optional)",
+                        file_types=[".wav", ".aif", ".aiff", ".flac"],
+                        type="filepath",
+                    )
+                    voc_ext_label = gr.Textbox(label="What it is", placeholder="Waves Tune")
+                    voc_bench = gr.Button("Compare engines")
+                voc_bench_md = gr.Markdown()
+        with gr.Tab("Vocal Mix"):
+            gr.Markdown(MIX_INTRO)
             with gr.Row():
-                voc_scale = gr.Dropdown(
-                    label="Scale",
-                    choices=[("From the key", ""), *[(name, name) for name in scales.SCALES]],
-                    value="",
-                )
-                voc_notes = gr.Textbox(
-                    label="Or your own notes",
-                    placeholder="F G# A# C D#",
-                    info="Overrides the scale.",
-                )
-                voc_engine = gr.Radio(
-                    label="Engine", choices=list(tuning.ENGINES), value=start.engine
-                )
-            with gr.Row():
-                voc_retune = gr.Slider(
-                    0, 400, value=start.retune_ms, step=5, label="Retune speed (ms; 0 is instant)"
-                )
-                voc_humanize = gr.Slider(
-                    0,
-                    100,
-                    value=round(start.humanize * 100),
-                    step=5,
-                    label="Humanize (%; 100 keeps vibrato and slides)",
-                )
-            with gr.Row():
-                voc_formants = gr.Checkbox(label="Keep the formants", value=True)
-                voc_shift = gr.Slider(
-                    -12, 12, value=0, step=0.5, label="Formant shift (semitones; WORLD only)"
-                )
-                voc_hold = gr.Checkbox(label="Note hold: one step per slide", value=False)
-            gr.Markdown(
-                "**Notes.** The thin line is where a note was sung, the bar where it will go. "
-                "Click a note to leave it alone, drag it to send it elsewhere, click an "
-                "edited note to undo."
-            )
-            script = (
-                resources.files("masterbench.ui").joinpath("pitch_editor.js").read_text("utf-8")
-            )
-            voc_editor = gr.HTML(
-                value=editor_value(None, None),
-                html_template=EDITOR_TEMPLATE,
-                css_template=EDITOR_CSS,
-                js_on_load=script,
-                server_functions=[save_edits],
-                elem_id="mb-pitch-editor",
-            )
-            with gr.Row():
-                voc_preset_name = gr.Textbox(label="Save these settings as a preset", scale=2)
-                voc_preset_save = gr.Button("Save preset", scale=1)
-            voc_preset_md = gr.Markdown()
-            gr.Markdown(
-                "**Compare engines.** Tunes this vocal with both engines, Natural and Hard-tune, "
-                "and loads them all in the player above. Add the same vocal tuned in Waves or "
-                "Flex Pitch, then use the player's blind test to choose without knowing which "
-                "is which."
-            )
-            with gr.Row():
-                voc_ext = gr.File(
-                    label="The same vocal tuned elsewhere (optional)",
-                    file_types=[".wav", ".aif", ".aiff", ".flac"],
-                    type="filepath",
-                )
-                voc_ext_label = gr.Textbox(label="What it is", placeholder="Waves Tune")
-                voc_bench = gr.Button("Compare engines")
-            voc_bench_md = gr.Markdown()
+                with gr.Column(scale=1):
+                    mx_vocal = gr.File(
+                        label="Dry lead vocal",
+                        file_types=AUDIO_TYPES,
+                        type="filepath",
+                        elem_id="mb-mix-vocal",
+                    )
+                    mx_tuned = gr.Dropdown(
+                        label="Or a version tuned in the Tune tab",
+                        choices=tuned_choices(paths),
+                        value=None,
+                    )
+                    mx_beat = gr.File(
+                        label="Instrumental, bounced from the same start",
+                        file_types=AUDIO_TYPES,
+                        type="filepath",
+                        elem_id="mb-mix-beat",
+                    )
+                    mx_adlibs = gr.File(
+                        label="Ad-libs or backing vocals (optional)",
+                        file_types=AUDIO_TYPES,
+                        type="filepath",
+                        file_count="multiple",
+                    )
+                    mx_title = gr.Textbox(label="Track title")
+                    mx_genre = gr.Dropdown(
+                        label="Genre", choices=genres, value=genre_default, allow_custom_value=True
+                    )
+                    mx_chain = gr.Radio(
+                        label="Vocal chain",
+                        choices=mix_assistant.chain_names(paths),
+                        value=mix_assistant.DEFAULT_CHAIN,
+                    )
+                    mx_go = gr.Button("Mix and master", variant="primary")
+                with gr.Column(scale=2):
+                    mx_result = gr.Markdown()
+                    mx_player = player.component(
+                        paths, "mb-mix-player", player_config(None, message=MIX_PLAYER_HINT)
+                    )
+                    mx_files = gr.File(label="Files", file_count="multiple", interactive=False)
+                    mx_notes_md = gr.Markdown()
+            with gr.Accordion("Options", open=False):
+                with gr.Row():
+                    mx_target = gr.Number(
+                        label="Vocal against the beat (LU)",
+                        info="Leave empty for the genre's default.",
+                        value=None,
+                    )
+                    mx_range = gr.Slider(0, 12, value=6, step=0.5, label="Rider range (± dB)")
+                    mx_carve = gr.Slider(
+                        0, 6, value=3, step=0.5, label="Dip in the beat's 1-4 kHz (dB)"
+                    )
+                    mx_duck = gr.Slider(
+                        0, 6, value=0, step=0.5, label="Duck the beat in hooks (dB)"
+                    )
+                with gr.Row():
+                    mx_adlib = gr.Radio(
+                        label="Ad-libs",
+                        choices=list(mix_assistant.ADLIB_PRESETS),
+                        value="tucked",
+                    )
+                    mx_curve = gr.Checkbox(label="Master toward the genre curve")
+                    mx_notes = gr.Checkbox(
+                        label="Ask for AI mix notes (sends numbers only, never audio)"
+                    )
+                mx_intent = gr.Textbox(label="What are you going for? (for the notes)")
 
     def resolve(state, file, picked, title, is_mix, progress) -> VocalSource:
         """The vocal the controls point at; brought into the project the first time."""
@@ -470,3 +592,69 @@ def build(paths: Paths, settings: Settings) -> None:
         [current, voc_key, voc_scale, voc_ext, voc_ext_label],
         [voc_bench_md, voc_player],
     )
+
+    def on_mix(
+        vocal, tuned, beat, adlibs, title, genre, chain_name, target, ride_range, carve_db,
+        duck_db, adlib_preset, by_curve, want_notes, intent, progress=gr.Progress(),
+    ):  # fmt: skip
+        chosen = vocal or tuned
+        if not chosen or not beat:
+            raise gr.Error("Choose a vocal and an instrumental first.")
+        try:
+            options = MixOptions(
+                chain=chain_name,
+                title=(title or "").strip() or None,
+                genre=genre or None,
+                target_db=None if target in (None, "") else float(target),
+                max_ride_db=float(ride_range),
+                carve_db=float(carve_db),
+                duck_db=float(duck_db),
+                adlib_preset=adlib_preset,
+                by_curve=bool(by_curve),
+            )
+            result = mix_assistant.mix(
+                paths,
+                settings,
+                Path(chosen),
+                Path(beat),
+                options,
+                [Path(file) for file in adlibs or []],
+                lambda stage, fraction: progress(fraction, desc=stage),
+                bool(want_notes),
+                intent or "",
+            )
+        except ERRORS as exc:
+            raise gr.Error(str(exc)) from exc
+        files = [str(result.path(name)) for name in result.files]
+        if result.mastered:
+            files.insert(0, str(result.run.output("master_24")))
+        notes = mix_notes.render(result.notes) if result.notes else ""
+        return (
+            "```\n" + summary.vocal_mix_text(result) + "\n```",
+            mix_player_config(result),
+            files,
+            notes,
+        )
+
+    mx_go.click(
+        on_mix,
+        [
+            mx_vocal,
+            mx_tuned,
+            mx_beat,
+            mx_adlibs,
+            mx_title,
+            mx_genre,
+            mx_chain,
+            mx_target,
+            mx_range,
+            mx_carve,
+            mx_duck,
+            mx_adlib,
+            mx_curve,
+            mx_notes,
+            mx_intent,
+        ],
+        [mx_result, mx_player, mx_files, mx_notes_md],
+    )
+    voc_tune.click(lambda: gr.Dropdown(choices=tuned_choices(paths)), None, mx_tuned)

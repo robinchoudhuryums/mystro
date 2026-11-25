@@ -357,3 +357,46 @@ def test_vocal_commands(data_root: Path, tmp_path: Path, fx: dict[str, Path]) ->
         assert failed.exit_code == 1 and message in failed.output, failed.output
     assert runner.invoke(app, ["vocal", "tune", str(vocal), "--set", "x=1"]).exit_code == 2
     assert "2 vocal reports" in runner.invoke(app, ["reindex"]).stdout, "one per track"
+
+
+def test_vocal_mix_command(data_root: Path, tmp_path: Path, fx: dict[str, Path]) -> None:
+    from masterbench import fixtures
+
+    vocal, beat, _ = fixtures.vocal_over_song()
+    vox = fixtures.write_wav(tmp_path / "Night Drive vox.wav", vocal)
+    song = fixtures.write_wav(tmp_path / "Night Drive.wav", beat)
+    listed = runner.invoke(app, ["vocal", "chains"])
+    assert [line.split()[0] for line in listed.stdout.splitlines()] == [
+        "gentle",
+        "modern-rap",
+        "aggressive",
+    ]
+    runner.invoke(app, ["ref", "add", str(fx["reference"]), "--genre", "hip-hop"])
+
+    made = runner.invoke(
+        app,
+        ["vocal", "mix", str(vox), str(song), "--genre", "hip-hop", "--target", "-3", "--notes"],
+    )
+    assert made.exit_code == 0, made.output
+    assert "target -3.0 LU (set by hand); the mix came out at -2.9 LU." in made.stdout
+    assert "verse 1  0:06  0:20" in made.stdout and "hook 2" in made.stdout
+    assert "Master: -14.0 LUFS, -1.0 dBTP" in made.stdout
+    assert "AI notes were not made: No Anthropic API key was found" in made.stdout
+    (master,) = data_root.glob("projects/night-drive/runs/*/master_24.wav")
+    assert f"master: {master}" in made.stdout
+    (folder,) = data_root.glob("projects/night-drive/vocal_mix/*/")
+    assert {p.name for p in folder.iterdir()} == {
+        f"vocal-mix-{folder.name}.wav",
+        "lead_vocal.wav",
+        "instrumental.wav",
+        "vocal_mix.json",
+    }
+
+    for arguments, message in (
+        (["vocal", "mix", str(vox), str(song), "--chain", "gone"], "no vocal chain named 'gone'"),
+        (["vocal", "mix", "--from-stems", "night-drive"], "has no stems yet"),
+    ):
+        failed = runner.invoke(app, arguments)
+        assert failed.exit_code == 1 and message in failed.output, failed.output
+    assert runner.invoke(app, ["vocal", "mix", str(vox)]).exit_code == 2
+    assert runner.invoke(app, ["vocal", "mix", str(vox), str(song), "--ride", "40"]).exit_code == 2

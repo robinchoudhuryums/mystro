@@ -144,6 +144,15 @@ def _sections(
     return sections.build(audio, info.sample_rate, starts, kinds, source="manual")
 
 
+def song_shape(
+    audio: np.ndarray, info: AudioInfo, settings: Settings, overrides: Overrides | None = None
+) -> tuple[Musical | None, Sections]:
+    """Key and tempo, and the song's sections, without the rest of the analysis."""
+    overrides = overrides or Overrides()
+    music = _musical(audio, info, settings, overrides.key)
+    return music, _sections(audio, info, music.tempo_bpm if music else None, overrides)
+
+
 def analyze_audio(
     audio: np.ndarray,
     info: AudioInfo,

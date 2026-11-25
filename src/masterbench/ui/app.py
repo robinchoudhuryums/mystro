@@ -421,7 +421,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             )
             st_master = gr.Button("Rebalance and master")
             st_result = gr.Markdown()
-        vocal_tab.build(paths, settings)
+        vocal_tab.build(paths, settings, genres, genre_default)
         with gr.Tab("Batch"):
             gr.Markdown(
                 "Master a whole EP the same way. Uses the reference, targets and chains chosen "

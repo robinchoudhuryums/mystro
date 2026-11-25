@@ -150,11 +150,20 @@ def _note_offset_cents(freq_hz: float) -> float:
     return float((midi - round(midi)) * 100)
 
 
-def resonances(mono: np.ndarray, sample_rate: int, limits: Thresholds) -> list[Flag]:
+@dataclass(frozen=True)
+class Resonance:
+    freq_hz: float
+    prominence_db: float
+    q: float
+    persistence: float
+
+
+def resonance_peaks(mono: np.ndarray, sample_rate: int, limits: Thresholds) -> list[Resonance]:
     """Narrow peaks that stand above their surroundings whenever that part of the spectrum sounds.
 
     A held note looks the same in a spectrum, so peaks that sit on a musical pitch are left
-    out. That misses a resonance which happens to land on a note.
+    out. That misses a resonance which happens to land on a note. At most three are
+    returned, the most prominent first, no two within a third of an octave.
     """
     frame = 8192
     freqs, _, spec = signal.stft(mono, sample_rate, nperseg=frame, noverlap=frame // 2)
@@ -190,16 +199,23 @@ def resonances(mono: np.ndarray, sample_rate: int, limits: Thresholds) -> list[F
             continue
         width_hz = max(int(np.sum(mean_db[around] >= mid - 3)), 1) * step
         found.append((prominence, freq, freq / width_hz, persistence))
-    flags, reported = [], []
+    kept: list[Resonance] = []
     for prominence, freq, q, persistence in sorted(found, reverse=True):
-        if len(flags) == 3 or any(abs(np.log2(freq / other)) < 1 / 3 for other in reported):
+        if len(kept) == 3 or any(abs(np.log2(freq / other.freq_hz)) < 1 / 3 for other in kept):
             continue
-        reported.append(freq)
+        kept.append(Resonance(float(freq), float(prominence), float(q), float(persistence)))
+    return kept
+
+
+def resonances(mono: np.ndarray, sample_rate: int, limits: Thresholds) -> list[Flag]:
+    flags = []
+    for peak in resonance_peaks(mono, sample_rate, limits):
+        freq = peak.freq_hz
         shown = f"{freq / 1000:.2f} kHz" if freq >= 1000 else f"{freq:.0f} Hz"
         message = (
-            f"A narrow peak at {shown} stands {prominence:.0f} dB above its surroundings "
-            f"{persistence:.0%} of the time that range sounds (Q about {q:.0f}). If it is not "
-            "a held note, a narrow cut there may help."
+            f"A narrow peak at {shown} stands {peak.prominence_db:.0f} dB above its surroundings "
+            f"{peak.persistence:.0%} of the time that range sounds (Q about {peak.q:.0f}). If it "
+            "is not a held note, a narrow cut there may help."
         )
         flags.append(Flag("resonance", "info", message, round(freq, 1)))
     return flags

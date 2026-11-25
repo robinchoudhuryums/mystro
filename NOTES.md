@@ -476,6 +476,57 @@ tracking alone takes about a seventh of the audio's length.
   check; a vocal added from the command line shows after a reload.
 - `launchd/` is still not written.
 
+## Phase 9: vocal mix assistant (2026-11-25)
+
+### What was built
+
+`vocal/dynamics.py` (de-esser, rider, dip and duck in the beat) and
+`vocal/mix_assistant.py` (vocal chain presets, sends, ad-libs, summing, mastering, the
+feedback numbers). New commands: `vocal mix`, `vocal chains`. A Vocal Mix sub-tab. AI notes
+see the vocal mix's numbers. 385 tests, about 15 minutes; `scripts/check_vocal.js` now runs 19
+browser checks, the last four on the Vocal Mix tab through to a mastered file.
+
+### Findings
+
+| Finding | Consequence |
+|---|---|
+| One capped gain cannot both set the vocal's level and ride it: the fixture needed -7.7 dB in the verses on top of ±3 dB of wander, past a ±6 dB cap. | The rider has a fader first (uncapped, one value for the song); the cap applies to the moves around it. |
+| A rider that only follows 3 s windows leaves sections up to 0.7 dB off; a trim per section alone leaves phrases uneven. | Both: slow rider, then a trim per section, iterated three times. Sections land within 0.01 dB of target before the sends are added, about 0.1 dB after. |
+| `audio - band + band * gain` is not the input where the gain is 1; rounding leaves dust in a fifth of the samples. | The change is added instead (`audio + band * (gain - 1)`), and gains under a millionth of a dB are zero. Away from sibilance, and in the beat where there is no vocal, the output is bit-identical. |
+| One-second windows at a section boundary read a jump in the vocal that is only the beat changing level. | "Vocal louder/quieter than usual" findings within 1.5 s of a section boundary are left out of the mix's flags. |
+| The resonance detector skips peaks within 20 cents of a musical pitch; 3100 Hz is exactly that, 3000 Hz is not. | Only a test changed, but it shows the rule's price: a resonance on a note is not cut. |
+| With no API key anywhere, the Anthropic SDK builds a client and raises a bare `TypeError` when asked to send. `masterbench notes` would have ended in a traceback since Phase 5. | Caught and reported as "No Anthropic API key was found", with how to set one (tested). |
+
+### Measurements (fixtures, 4 Linux CPU cores)
+
+| Check | Result |
+|---|---|
+| Vocal against the beat by section, before (verse, hook, verse, hook) | +5.7, +0.6, +5.7, -0.3 LU |
+| The same after riding to -2 LU, on the written files | -1.7 to -1.9 LU |
+| Spread of that figure across 3 s windows (5th to 95th percentile) | 11.2 dB before, 2.4 dB after |
+| Fastest the rider's gain moves | 6 dB per second |
+| De-esser on bursts as loud as the voice / 6 dB quieter | 7.2 dB / 4.2 dB off the 5 to 10 kHz band |
+| Dip in the beat's 1 to 4 kHz while the vocal sounds (3 dB asked) | 2.8 dB; nothing where there is no vocal |
+| Exported vocal + instrumental against the mix | identical to 24-bit precision |
+| Whole run, 69 s song: mix, then master and analysis | 11 s + 11 s |
+
+### Known gaps
+
+- **Unheard.** Every number above is a level or a spectrum. Whether the chain sounds good,
+  the rider musical or the reverb usable is for Robin's ears.
+- Chain presets, genre targets and ad-lib presets are invented starting points.
+- Corrective EQ trusts the resonance detector (up to three cuts, 6 dB at most).
+- The rider cannot tell a quiet line that should be quiet from one that should not.
+- Reverb and delay are Pedalboard's built-in ones; their tails are cut at the end of the
+  file. For better ones, put a plugin in a chain preset and name it as the vocal chain's
+  `insert` (that puts it in series, not on a send).
+- Ad-libs all get one preset; several files alternate sides under "left" or "right".
+- The reference's vocal level is one number for the whole track, and only if its stems
+  were separated before (`--target-from-reference` does that once, and takes minutes).
+- The Vocal Mix tab offers the main settings; reverb and delay levels, the de-esser and
+  the compressor are changed in a chain file under `presets/vocal/`.
+- A vocal mix is not undone or redone in parts: changing one setting runs it all again.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -519,6 +570,13 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
 6h. **Phase 8 on a real vocal, before trusting it:** `masterbench vocal report vocal.wav`
    and compare the notes it lists with what you hear; check the first and last consonant of
    a tuned phrase for clicks; try a phrase with breathy or creaky notes.
+6i. **Phase 9 by ear.** Bounce a dry lead and its instrumental from the same point and run
+   `masterbench vocal mix vocal.wav beat.wav --genre hip-hop --title "Song"` (or the Vocal
+   Mix tab). Listen to `lead_vocal.wav` alone first: is the de-esser too much, does the
+   corrective cut take something that belongs, do the rider's moves sound natural. Then try
+   the three chains. To put a Soundtoys plugin on the vocal: make a chain preset with
+   `masterbench preset add-plugin`, copy a vocal chain into `presets/vocal/` and set
+   `insert = "that-preset"`.
 7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while
