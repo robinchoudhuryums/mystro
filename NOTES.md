@@ -527,6 +527,33 @@ browser checks, the last four on the Vocal Mix tab through to a mastered file.
   the compressor are changed in a chain file under `presets/vocal/`.
 - A vocal mix is not undone or redone in parts: changing one setting runs it all again.
 
+## Automatic reference choice (2026-11-25)
+
+Added after Phase 9. `references/suggest.py` gained `choose`, the pipeline takes `auto` and
+`genre/auto` as a reference, and `default_reference` in `settings.toml` decides what an
+unnamed reference means. 394 tests, about 17 minutes.
+
+| Check (two synthetic references in one genre) | Result |
+|---|---|
+| A slow, light, dull loop against a fast, sub-heavy, bright one, each as a driven "reference"; a fresh loop of each feel as the mix | each mix picks its own feel: similarity 0.95 and 0.97, against -0.11 and -0.09 for the other reference |
+| A clipped copy of the nearer reference in the bank | passed over while a sound reference exists; used when it is the only one |
+
+Known gaps:
+
+- **Only shown on synthetic loops that differ in everything at once.** Two real records in
+  one genre may differ mainly in drum sounds and groove, which this measure does not see:
+  it knows tempo, mode, tonal balance, dynamics and width. With close candidates the
+  similarity figures in the run summary say how clear the pick was.
+- The stated reason names the two closest features, which can include one that all
+  candidates share (the fixtures are all in one key, and "key" is listed).
+- `--target-from-reference` in the vocal mix needs a named reference: the closest one is
+  only known once the mix exists.
+- In batch mode each track picks its own reference, so an EP may be mastered against
+  several. Name one reference for the whole set if it should be uniform.
+- Analysis-only runs compare against the closest reference when the setting is `auto`, so
+  "over the reference" in the progress view can mean different references on different
+  tracks. A genre curve, where one exists, is still the yardstick used there.
+
 ## Still to verify on the Mac
 
 Re-run `uv run python scripts/verify_stack.py` there and update this file.
@@ -577,6 +604,10 @@ Re-run `uv run python scripts/verify_stack.py` there and update this file.
    the three chains. To put a Soundtoys plugin on the vocal: make a chain preset with
    `masterbench preset add-plugin`, copy a vocal chain into `presets/vocal/` and set
    `insert = "that-preset"`.
+6j. **Automatic reference on real records:** add two contrasting references to one genre,
+   run `masterbench ref suggest song.wav --genre hip-hop` on a few of your mixes, and see
+   whether the ranking matches your own judgement before setting
+   `default_reference = "auto"`.
 7. **Phase 2 by ear:** the A/B/C player in Safari or Chrome (switching, loops, blind mode).
 8. **Phase 1 on a real Logic bounce:** master it from the UI, listen to the limiter on
    808-heavy material, and drop a bounce into `~/MasterBench/Inbox/<genre>/` while

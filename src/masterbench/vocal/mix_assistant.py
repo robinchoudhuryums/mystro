@@ -385,7 +385,10 @@ def target_for(
         return options.target_db, "set by hand", reference_db
     if options.target_from_reference:
         if reference_db is None:
-            raise MixError("no reference with a vocal to take the target from; give a number")
+            raise MixError(
+                "no reference with a vocal to take the target from; name one with --ref "
+                "('auto' is only picked once the mix exists) or give a number"
+            )
         return round(reference_db, 1), "the reference's separated stems", reference_db
     if genre and genre in GENRE_TARGET_DB:
         return GENRE_TARGET_DB[genre], f"the default for {genre}", reference_db
@@ -410,11 +413,16 @@ def _stem_ratio(stem_set: StemSet) -> float | None:
     return None if found is None else round(found, 2)
 
 
+def _reference_spec(settings: Settings, options: MixOptions, genre: str | None) -> str | None:
+    return options.reference or (library.default_spec(settings, genre) if genre else None)
+
+
 def _reference(
     paths: Paths, settings: Settings, options: MixOptions, genre: str | None
 ) -> library.Reference | None:
-    spec = options.reference or (f"{genre}/default" if genre else None)
-    if spec is None:
+    spec = _reference_spec(settings, options, genre)
+    if spec is None or library.auto_genre(spec) is not None:
+        # The closest reference is only known once there is a mix to compare with.
         return None
     try:
         return library.resolve(paths, spec, settings)
@@ -666,16 +674,21 @@ def _master(
 ) -> tuple[RunResult, bool]:
     """Master the mix against the genre's reference or curve; without either, analyze it."""
     by_curve = options.by_curve
-    reference = _reference(paths, settings, options, genre)
-    if reference is None and not by_curve:
+    spec = _reference_spec(settings, options, genre)
+    bank = None if spec is None else library.auto_genre(spec)
+    if bank is None:
+        have_reference = _reference(paths, settings, options, genre) is not None
+    else:
+        have_reference = bool(library.list_references(paths, bank or genre))
+    if not have_reference and not by_curve:
         from masterbench.references import target_curve
 
         by_curve = target_curve.load(paths, genre) is not None
-    if reference is None and not by_curve:
+    if not have_reference and not by_curve:
         return pipeline.analyze(source, paths, settings, genre, title, progress), False
     targets = settings.targets
     wanted = MasterOptions(
-        reference="" if by_curve else (options.reference or f"{genre}/default"),
+        reference=spec or "",
         target_lufs=options.target_lufs if options.target_lufs is not None else targets.lufs_i,
         ceiling_dbtp=(
             options.ceiling_dbtp if options.ceiling_dbtp is not None else targets.true_peak_dbtp

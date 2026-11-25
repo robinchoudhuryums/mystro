@@ -57,6 +57,18 @@ def headline(result: RunResult) -> str:
     return text
 
 
+def reference_line(result: RunResult) -> str | None:
+    """When the reference was picked automatically: which one, why, and over which others."""
+    choice = result.manifest.settings.get("reference_choice")
+    if not choice:
+        return None
+    text = f"Reference: {choice['chosen']}, picked automatically ({choice['why']})."
+    if choice["others"]:
+        rest = ", ".join(f"{o['reference']} {o['similarity']:.2f}" for o in choice["others"])
+        text += f" Similarity {choice['similarity']:.2f}; the others: {rest}."
+    return text
+
+
 def as_text(result: RunResult) -> str:
     rows = [_COLUMNS, *_rows(result)]
     widths = [max(len(row[i]) for row in rows) for i in range(len(_COLUMNS))]
@@ -65,6 +77,8 @@ def as_text(result: RunResult) -> str:
         for row in rows
     ]
     lines.append("")
+    picked = reference_line(result)
+    lines += [picked, ""] if picked else []
     lines += analysis_lines(result)
     lines += [flag_line(flag) for flag in result.flags] or ["No flags."]
     if result.manifest.outputs:
@@ -92,6 +106,9 @@ def as_markdown(result: RunResult) -> str:
             f"Gain {stats['gain_db']:+.1f} dB, limiter reduction up to "
             f"{stats['max_reduction_db']:.1f} dB, {stats['seconds']:.1f} s.",
         ]
+    picked = reference_line(result)
+    if picked:
+        lines += ["", picked]
     return "\n".join(lines)
 
 
@@ -184,8 +201,19 @@ def batch_text(result: BatchResult) -> str:
         lines.append("One track mastered; a consistency report needs at least two.")
     for failure in result.failures:
         lines.append(f"✖ {Path(failure.source).name} failed: {failure.error}")
+    lines += batch_picks(result)
     lines.append(f"batch: {result.dir}")
     return "\n".join(lines)
+
+
+def batch_picks(result: BatchResult) -> list[str]:
+    """Which reference each track got, when the pick was left to the tool."""
+    return [
+        f"{run.manifest.track.title}: reference {choice['chosen']}, picked automatically "
+        f"({choice['why']})."
+        for run in result.runs
+        if (choice := run.manifest.settings.get("reference_choice"))
+    ]
 
 
 def batch_markdown(result: BatchResult) -> str:
@@ -210,6 +238,8 @@ def batch_markdown(result: BatchResult) -> str:
             *([f"- {flag_line(f)}" for f in report.flags] or ["The set is consistent: no flags."]),
         ]
     lines += [f"- ✖ {Path(f.source).name} failed: {f.error}" for f in result.failures]
+    picks = batch_picks(result)
+    lines += ["", *[f"- {line}" for line in picks]] if picks else []
     return "\n".join(lines)
 
 

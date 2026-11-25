@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
 from masterbench.analysis.report import AnalysisReport
-from masterbench.references.library import Reference
+from masterbench.config import Paths
+from masterbench.references import library
+from masterbench.references.library import Reference, ReferenceError
 
 # (centre, scale) per feature: values are centred and scaled before the cosine distance, so
 # one unit means "a difference you would notice" on every axis.
@@ -94,3 +97,51 @@ def suggest(mix: AnalysisReport, references: list[Reference], count: int = 3) ->
         ranked.append(Suggestion(reference, round(similarity, 3), reasons))
     ranked.sort(key=lambda s: -s.similarity)
     return ranked[:count]
+
+
+@dataclass(frozen=True)
+class Choice:
+    """The reference picked for a mix out of a genre's bank, and what it was picked over."""
+
+    reference: Reference
+    genre: str
+    similarity: float | None
+    why: str
+    others: list[tuple[str, float]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "asked": f"{self.genre}/{library.AUTO}",
+            "chosen": self.reference.spec,
+            "similarity": self.similarity,
+            "why": self.why,
+            "others": [{"reference": spec, "similarity": score} for spec, score in self.others],
+        }
+
+
+def choose(paths: Paths, mix: AnalysisReport, genre: str) -> Choice:
+    """Pick the reference in a genre's bank that sits closest to a mix.
+
+    References badged poor (lossy rips, clipped, mono) are passed over while a better one
+    exists. A mix that is itself in the bank is never matched to itself.
+    """
+    bank = library.list_references(paths, genre)
+    if not bank:
+        raise ReferenceError(
+            f"no references in genre '{genre}' to choose from; add one with: "
+            f"masterbench ref add FILE --genre {genre}"
+        )
+    sound = [r for r in bank if r.quality is None or r.quality.usable_for_curves]
+    ranked = suggest(mix, sound or bank, count=len(bank))
+    if ranked:
+        best = ranked[0]
+        only = len(sound or bank) == 1
+        why = "the only reference in the genre" if only else best.why or "nearest overall"
+        others = [(s.reference.spec, s.similarity) for s in ranked[1:4]]
+        return Choice(best.reference, best.reference.genre, best.similarity, why, others)
+    others_exist = [r for r in bank if r.report.sha256 != mix.sha256]
+    if not others_exist:
+        raise ReferenceError(f"the only reference in genre '{genre}' is this very file")
+    # Nothing to compare on (a reference analyzed before balance was measured): fall back.
+    fallback = next((r for r in others_exist if r.is_default), others_exist[0])
+    return Choice(fallback, fallback.genre, None, "could not be compared; the genre default")

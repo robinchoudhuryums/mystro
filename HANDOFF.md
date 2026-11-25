@@ -129,6 +129,22 @@ edited in place below and marked *[P0]*):
 - Tuning a vocal that was separated from a mix also writes the mix with that vocal swapped
   for the tuned one, labelled preview quality.
 
+**Added after Phase 9, at Robin's request: automatic reference choice** (marked *[auto]* below):
+- A genre is a bank of references. `--ref auto` (or `genre/auto`) picks the one closest to
+  the mix, by the same measure as `ref suggest`: tempo (half and double time alike), major
+  or minor, balance in seven bands, crest factor and stereo width; loudness is left out.
+- `default_reference = "auto"` in `settings.toml` makes that the behaviour whenever no
+  reference is named: mastering, analysis (the comparison reference), the watch folder,
+  batch (each track picks its own) and the vocal mix. The shipped default stays
+  `"default"`, the genre's default reference.
+- References badged poor are passed over while a sound one exists. A named reference
+  always wins over the setting. The pick, its similarity, the reason and the runners-up are
+  stored in `run.json` under `reference_choice` and shown in the run summary.
+- In curve mode the closest reference is only the one the result is compared with.
+- `auto` and `default` cannot be used as reference file names.
+- For styles that should not share a target curve, use separate genres (`boom-bap`,
+  `trap`): a curve is built per genre, from all of its references.
+
 **Decisions made in Phase 9** (marked *[P9]* below):
 - The de-esser, the rider and the dip in the beat are our own DSP (`vocal/dynamics.py`),
   each a gain over time applied without delay. Compression, EQ, saturation, reverb and
@@ -378,7 +394,7 @@ Implemented in `src/masterbench/migrations/` (001 init; 002 adds content hashes 
 ### 5.3 Reference library
 - Genre folders (hip-hop, house, electronic, plus custom genres), with optional notes on each reference.
 - Cache each reference's analysis, quality check (5.13) and features on add.
-- Pickers are dropdowns grouped by genre, with a default reference per genre and a **"Suggested"** section at the top (5.13).
+- Pickers are dropdowns grouped by genre, with a default reference per genre and a **"Suggested"** section at the top (5.13). *[auto]* The picker also offers "Closest to this mix (picked automatically)", which is selected by default when `default_reference = "auto"`.
 
 ### 5.4 Analysis (core)
 - **Loudness:** integrated LUFS, short-term max, momentary max, LRA, true peak, PLR.

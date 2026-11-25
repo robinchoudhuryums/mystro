@@ -107,6 +107,7 @@ def run_summary(run: RunResult, detail: bool = False) -> dict[str, Any]:
         "created_at": run.manifest.created_at,
         "mode": used.get("mode"),
         "reference": (used.get("reference") or {}).get("spec"),
+        "reference_choice": used.get("reference_choice"),
         "target_lufs": used.get("target_lufs"),
         "ceiling_dbtp": used.get("ceiling_dbtp"),
         "folder": str(run.run_dir),
@@ -365,14 +366,15 @@ def build_server(paths: Paths, settings: Settings) -> MCPServer:
         post_chain: str | None = None,
     ) -> dict[str, Any]:
         """Master a mix as a new run; the input is never changed. match is 'reference' (one
-        track; reference is 'genre/name' or defaults to the genre's default) or 'curve' (the
-        genre's target curve). Needs writes enabled."""
+        track) or 'curve' (the genre's target curve). reference is 'genre/name', or 'auto' for
+        whichever reference in the genre sits closest to the mix; left out, the user's
+        settings decide between the genre's default and the closest. Needs writes enabled."""
         need_writes()
         if match not in ("reference", "curve"):
             raise ValueError("match must be 'reference' or 'curve'")
         source = readable(path)
         options = MasterOptions(
-            reference=reference or f"{genre or settings.default_genre}/default",
+            reference=reference or library.default_spec(settings, genre),
             target_lufs=settings.targets.lufs_i if target_lufs is None else target_lufs,
             ceiling_dbtp=settings.targets.true_peak_dbtp if ceiling_dbtp is None else ceiling_dbtp,
             genre=genre,
@@ -395,7 +397,7 @@ def build_server(paths: Paths, settings: Settings) -> MCPServer:
         need_writes()
         sources = [readable(p) for p in file_paths]
         options = MasterOptions.from_settings(
-            settings, reference or f"{genre or settings.default_genre}/default", genre=genre
+            settings, reference or library.default_spec(settings, genre), genre=genre
         )
         done = batch.run_batch(sources, options, paths, settings, name)
         return {

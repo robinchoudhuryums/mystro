@@ -54,13 +54,24 @@ def genre_choices(paths: Paths, settings: Settings) -> tuple[list[str], str | No
     return genres, default or (genres[0] if genres else None)
 
 
-def reference_choices(paths: Paths, genre: str | None) -> tuple[list[tuple[str, str]], str | None]:
-    """Dropdown (label, spec) pairs for a genre, with the genre default first and selected."""
+AUTO_LABEL = "Closest to this mix (picked automatically)"
+
+
+def reference_choices(
+    paths: Paths, genre: str | None, settings: Settings | None = None
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Dropdown (label, spec) pairs for a genre: its default first, then the rest, then
+    "closest to this mix". The default is selected unless settings ask for the closest."""
     if not genre:
         return [], None
     refs = sorted(library.list_references(paths, genre), key=lambda r: (not r.is_default, r.name))
+    if not refs:
+        return [], None
     choices = [(f"{r.name} (default)" if r.is_default else r.name, r.spec) for r in refs]
-    return choices, choices[0][1] if choices else None
+    closest = f"{refs[0].genre}/{library.AUTO}"
+    choices.append((AUTO_LABEL, closest))
+    wants_closest = settings is not None and settings.default_reference == library.AUTO
+    return choices, closest if wants_closest else choices[0][1]
 
 
 def preset_choices(paths: Paths) -> list[tuple[str, str]]:
@@ -279,7 +290,7 @@ def gain_rows(stem_set: StemSet, diagnosis: Diagnosis) -> list[list]:
 def build(paths: Paths, settings: Settings) -> gr.Blocks:
     paths.ensure()
     genres, genre_default = genre_choices(paths, settings)
-    refs, ref_default = reference_choices(paths, genre_default)
+    refs, ref_default = reference_choices(paths, genre_default, settings)
 
     with gr.Blocks(title="MasterBench") as app:
         gr.Markdown("# MasterBench")
@@ -542,7 +553,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
             raise gr.Error("Choose a mix first.")
 
         def on_genre(selected: str | None):
-            choices, value = reference_choices(paths, selected)
+            choices, value = reference_choices(paths, selected, settings)
             return gr.Dropdown(choices=choices, value=value)
 
         def on_master(
@@ -634,7 +645,7 @@ def build(paths: Paths, settings: Settings) -> gr.Blocks:
                 index.sync_references(conn, paths)
             all_genres = library.genres(paths)
             shown = current_genre or ref.genre
-            choices, value = reference_choices(paths, shown)
+            choices, value = reference_choices(paths, shown, settings)
             return (
                 f"Added **{ref.name}** to {ref.genre}: {ref.report.headline()}.",
                 library_rows(paths),

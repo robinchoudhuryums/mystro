@@ -81,6 +81,14 @@ def _or(value: float | None, default: float) -> float:
     return default if value is None else value
 
 
+def _reference_spec(settings: config.Settings, ref: str | None, genre: str | None) -> str:
+    """The reference named on the command line, else what settings.toml says to use."""
+    try:
+        return ref or library.default_spec(settings, genre)
+    except library.ReferenceError as exc:
+        raise _fail(exc) from exc
+
+
 def _progress(stage: str, fraction: float) -> None:
     typer.echo(f"[{fraction:>4.0%}] {stage}", err=True)
 
@@ -138,7 +146,10 @@ def master(
     mix: AudioFile,
     ref: Annotated[
         str | None,
-        typer.Option(help="'genre/default', 'genre/name' or a file. Default: the genre default."),
+        typer.Option(
+            help="'genre/name', a file, 'genre/default', or 'auto' for the closest reference "
+            "in the genre. Default: the genre default (or auto, if settings.toml says so)."
+        ),
     ] = None,
     genre: Annotated[str | None, typer.Option(help="Genre of the track.")] = None,
     lufs: Annotated[float | None, typer.Option(help="Integrated loudness target.")] = None,
@@ -162,9 +173,8 @@ def master(
     """Master a mix against a reference or a genre target curve. Writes a new run."""
     paths, settings = config.get_paths(), config.load_settings()
     paths.ensure()
-    spec = ref or f"{genre or settings.default_genre}/default"
     options = pipeline.MasterOptions(
-        reference=spec,
+        reference=_reference_spec(settings, ref, genre),
         target_lufs=None if match_loudness else _or(lufs, settings.targets.lufs_i),
         ceiling_dbtp=_or(ceiling, settings.targets.true_peak_dbtp),
         genre=genre,
@@ -553,7 +563,7 @@ def rebalance(
     try:
         chosen = stem_workflow.find_set(paths, track, stem_set)
         data = json.loads((paths.projects / track / "track.json").read_text(encoding="utf-8"))
-        spec = ref or f"{data.get('genre') or settings.default_genre}/default"
+        spec = ref or library.default_spec(settings, data.get("genre"))
         options = pipeline.MasterOptions.from_settings(
             settings, spec, title=data["title"], genre=data.get("genre"), post_chain=post
         )
@@ -591,7 +601,7 @@ def batch_command(
     paths, settings = config.get_paths(), config.load_settings()
     paths.ensure()
     options = pipeline.MasterOptions(
-        reference=ref or f"{genre or settings.default_genre}/default",
+        reference=_reference_spec(settings, ref, genre),
         target_lufs=_or(lufs, settings.targets.lufs_i),
         ceiling_dbtp=_or(ceiling, settings.targets.true_peak_dbtp),
         genre=genre,

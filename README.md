@@ -137,6 +137,17 @@ uv run masterbench speakers RUN_ID
 `masterbench ref suggest song.wav --genre hip-hop` ranks your references by how close they
 sit to a mix; `masterbench ref list` shows each reference's quality badge.
 
+A genre can hold a bank of references, say a boom-bap one and a trap one. `--ref auto`
+masters against whichever is closest to the mix and says which it picked and why:
+
+```bash
+uv run masterbench master ~/Music/Bounces/song.wav --genre hip-hop --ref auto
+```
+
+Closeness is judged on tempo, major or minor, tonal balance, dynamics and stereo width.
+To make this the default everywhere (mastering, analysis, the watch folder, batch, vocal
+mix), set `default_reference = "auto"` in `settings.toml`; a reference you name still wins.
+
 Master an EP the same way and check that the tracks sit together:
 
 ```bash
@@ -275,6 +286,7 @@ Defaults can be changed in `~/MasterBench/settings.toml`:
 
 ```toml
 default_genre = "house"
+default_reference = "auto"
 watch_auto_master = true
 
 break_interval_min = 45
@@ -300,7 +312,7 @@ uv run python scripts/verify_stack.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright
 ```
 
-The full suite takes about fifteen minutes. `pytest -m "not slow"` skips the test that drives the
+The full suite takes about seventeen minutes. `pytest -m "not slow"` skips the test that drives the
 third-party libraries.
 `verify_stack.py` exercises every library on generated audio and downloads one separation
 model (about 65 MB) the first time.

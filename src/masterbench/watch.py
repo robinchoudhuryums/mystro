@@ -67,12 +67,11 @@ def process_file(path: Path, root: Path, paths: Paths, settings: Settings) -> Wa
         analysis = pipeline.analyze(path, paths, settings, genre=genre)
         mastered = None
         if settings.watch_auto_master and genre:
-            try:
-                library.get(paths, genre, "default")
-            except library.ReferenceError:
-                log.info("no default reference for %s; not auto-mastering %s", genre, path.name)
+            if not library.list_references(paths, genre):
+                log.info("no reference for %s; not auto-mastering %s", genre, path.name)
             else:
-                options = MasterOptions.from_settings(settings, f"{genre}/default", genre=genre)
+                spec = library.default_spec(settings, genre)
+                options = MasterOptions.from_settings(settings, spec, genre=genre)
                 mastered = pipeline.master(path, options, paths, settings)
         return WatchEvent(path, genre, analysis, mastered)
     except Exception as exc:  # one bad file must not stop the watcher

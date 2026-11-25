@@ -21,6 +21,29 @@ class ReferenceError(LookupError):
     pass
 
 
+# Names that stand for a choice rather than a file: the genre's default, and "the closest".
+AUTO = "auto"
+RESERVED = ("default", AUTO)
+
+
+def auto_genre(spec: str) -> str | None:
+    """The genre of an automatic spec: '' for 'auto', 'house' for 'house/auto', else None."""
+    genre, slash, name = spec.strip().rpartition("/")
+    if name.lower() != AUTO or (slash and not genre) or Path(spec).expanduser().is_file():
+        return None
+    return genre
+
+
+def default_spec(settings: Settings, genre: str | None) -> str:
+    """The reference to use when none was named: the genre's default, or its closest."""
+    if settings.default_reference not in RESERVED:
+        raise ReferenceError(
+            f"default_reference in settings.toml must be 'default' or 'auto', "
+            f"not '{settings.default_reference}'"
+        )
+    return f"{genre or settings.default_genre}/{settings.default_reference}"
+
+
 @dataclass(frozen=True)
 class Reference:
     genre: str
@@ -130,6 +153,11 @@ def add(
     """Copy a file into the library and cache its analysis. The first in a genre is the default."""
     if not audio_io.is_audio(source):
         raise ReferenceError(f"not an audio file: {source.name}")
+    if _norm(source.stem) in RESERVED:
+        raise ReferenceError(
+            f"a reference cannot be called '{source.stem}': that name means "
+            "the genre's default or the closest match. Rename the file first."
+        )
     genre = _match_genre(paths, genre) or projects.slugify(genre)
     dest = paths.references / genre / source.name
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -197,7 +225,11 @@ def resolve(paths: Paths, spec: str, settings: Settings) -> Reference:
     if file.is_file():
         report, quality = analyze(file, settings)
         return Reference("", file.stem, file, report, quality=quality)
+    if auto_genre(spec) is not None:
+        raise ReferenceError("'auto' picks a reference for each mix; it is not one reference")
     genre, _, name = spec.partition("/")
     if not name:
-        raise ReferenceError(f"reference must be 'genre/name', 'genre/default' or a file: {spec}")
+        raise ReferenceError(
+            f"reference must be 'genre/name', 'genre/default', 'auto' or a file: {spec}"
+        )
     return get(paths, genre, name)

@@ -87,6 +87,7 @@ class Settings:
     notes_model: str = "claude-sonnet-5-5"
     notes_monthly_cap_usd: float = 5.0
     default_genre: str = "hip-hop"
+    default_reference: str = "default"
     tempo_low_bpm: float = 80.0
     tempo_high_bpm: float = 160.0
     watch_auto_master: bool = False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,12 @@ def test_genre_default_reference_is_preselected(
     assert choices == [
         ("reference (default)", "hip-hop/reference"),
         ("pink_noise", "hip-hop/pink_noise"),
+        ("Closest to this mix (picked automatically)", "hip-hop/auto"),
     ]
     assert value == "hip-hop/reference"
+    closest_first = replace(settings, default_reference="auto")
+    assert app.reference_choices(paths, selected, closest_first) == (choices, "hip-hop/auto")
+    assert app.reference_choices(paths, "house", closest_first) == ([], None)
     assert app.library_rows(paths)[1][:3] == ["hip-hop", "reference", "yes"]
 
 

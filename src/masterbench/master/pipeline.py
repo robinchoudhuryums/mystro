@@ -18,7 +18,8 @@ from masterbench.config import Paths, Settings
 from masterbench.master import chain, curve_match, limiter, matchering_engine, presets
 from masterbench.master.matchering_engine import MasteringError
 from masterbench.projects import RunManifest
-from masterbench.references import library, target_curve
+from masterbench.references import library, suggest, target_curve
+from masterbench.references.suggest import Choice
 from masterbench.references.target_curve import TargetCurve
 
 ProgressFn = Callable[[str, float], object]
@@ -130,13 +131,32 @@ def _compare(
     return report
 
 
+def _comparison(
+    paths: Paths, settings: Settings, mix: AnalysisReport, genre: str | None
+) -> tuple[library.Reference | None, Choice | None]:
+    """The reference a mix is compared with when none was named.
+
+    The genre's default, or, with default_reference = "auto" in settings.toml, whichever
+    reference in the genre's bank sits closest to this mix.
+    """
+    if not genre:
+        return None, None
+    if settings.default_reference != library.AUTO:
+        return _genre_default(paths, genre), None
+    try:
+        choice = suggest.choose(paths, mix, genre)
+    except library.ReferenceError:
+        return None, None
+    return choice.reference, choice
+
+
 def measure(
     source: Path, paths: Paths, settings: Settings, genre: str | None = None
 ) -> dict[str, AnalysisReport]:
     """Analyze a mix against its genre's reference and curve without storing anything."""
     audio, info = audio_io.load(source)
     mix = analysis.analyze_audio(audio, info, source, "mix", settings)
-    reference = _genre_default(paths, genre)
+    reference, _ = _comparison(paths, settings, mix, genre)
     reports = {"mix": _compare(mix, reference, target_curve.load(paths, genre), settings, genre)}
     if reference is not None:
         reports["reference"] = reference.report
@@ -166,13 +186,15 @@ def analyze(
         overrides_for(project),
     )
     track_genre = project.track.genre
-    reference = _genre_default(paths, track_genre)
+    reference, choice = _comparison(paths, settings, mix, track_genre)
     curve = target_curve.load(paths, track_genre)
     settings_used: dict = {}
     reports = {"mix": _compare(mix, reference, curve, settings, track_genre)}
     if reference is not None:
         reports["reference"] = reference.report
         settings_used["reference"] = _reference_settings(reference)
+    if choice is not None:
+        settings_used["reference_choice"] = choice.to_dict()
     if curve is not None:
         settings_used["curve"] = _curve_settings(curve)
     manifest = RunManifest(
@@ -199,7 +221,9 @@ def master(
     """Master a mix. Always creates a new run; the input is never changed.
 
     Two ways to match: "matchering" follows one reference track; "curve" applies a static
-    matching EQ toward the genre's target curve. Either way the order is pre-chain, match,
+    matching EQ toward the genre's target curve. The reference may be named, or left to be
+    picked: 'auto' (or 'genre/auto') takes whichever reference in the genre's bank sits
+    closest to this mix, and the run records the pick. Either way the order is pre-chain, match,
     post-chain, then loudness and the true-peak limiter. The final limiter always runs last,
     so nothing is limited twice by accident and the ceiling holds whatever the chains do.
     """
@@ -209,11 +233,26 @@ def master(
     if options.mode not in ("matchering", "curve"):
         raise MasteringError(f"unknown mode '{options.mode}'; use 'matchering' or 'curve'")
     match_curve = None
+    reference = None
+    # The genre whose bank the reference is picked from, when the pick is left to us.
+    bank = library.auto_genre(options.reference)
     if by_curve:
         wanted = options.curve or options.genre or settings.default_genre
         match_curve = target_curve.get(paths, wanted)
-        reference = _genre_default(paths, match_curve.genre)
         genre = options.genre or match_curve.genre
+        if bank is None:
+            reference = _genre_default(paths, match_curve.genre)
+        else:
+            bank = match_curve.genre
+    elif bank is not None:
+        bank = bank or options.genre or settings.default_genre
+        known = library.list_references(paths, bank)
+        if not known:
+            raise library.ReferenceError(
+                f"no references in genre '{bank}' to choose from; add one with: "
+                f"masterbench ref add FILE --genre {bank}"
+            )
+        genre = options.genre or known[0].genre
     else:
         reference = library.resolve(paths, options.reference, settings)
         genre = options.genre or reference.genre or None
@@ -233,6 +272,16 @@ def master(
         project.input_sha256,
         overrides_for(project),
     )
+    choice = None
+    if bank is not None:
+        progress("Choosing the closest reference", 0.25)
+        try:
+            choice = suggest.choose(paths, mix, bank)
+            reference = choice.reference
+        except library.ReferenceError:
+            # A curve can be matched without a reference to compare with; a reference cannot.
+            if not by_curve:
+                raise
 
     pre = presets.get(paths, options.pre_chain) if options.pre_chain else None
     post = presets.get(paths, options.post_chain) if options.post_chain else None
@@ -272,6 +321,8 @@ def master(
         "pre_chain": pre.to_dict() if pre else None,
         "post_chain": post.to_dict() if post else None,
     }
+    if choice is not None:
+        used["reference_choice"] = choice.to_dict()
     if curve is not None:
         used["curve"] = _curve_settings(curve)
     if eq is not None:
